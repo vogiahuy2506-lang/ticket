@@ -19,7 +19,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Then open <http://localhost:3000>.
+Then open <http://localhost:3100>.
 
 The API container runs the migrations and the seed automatically, so the
 database comes up with:
@@ -39,12 +39,33 @@ Useful commands:
 docker compose logs -f api      # API logs
 docker compose exec api npm run db:reset -w @tce/api   # wipe and re-seed
 npm test                        # unit tests (fees + ledger)
-API_BASE_URL=http://localhost:3001 npm run e2e -w @tce/api   # end-to-end money flow
+API_BASE_URL=http://localhost:3101 npm run e2e -w @tce/api   # end-to-end money flow
 ```
 
-> If a host port is already taken, change `DB_PORT`, `API_PORT` and `WEB_PORT`
-> in `.env` (they are already set to non-default values so the stack does not
-> collide with a local PostgreSQL install).
+> The default host ports are **3100** (storefront), **3101** (API) and
+> **55432** (Postgres) so the stack does not collide with a local PostgreSQL
+> install. They are all configurable in `.env` (`WEB_PORT`, `API_PORT`,
+> `DB_PORT`).
+
+### Running without Docker
+
+If you prefer to run the apps directly against a local PostgreSQL:
+
+```bash
+npm install
+npm run build:shared
+
+# terminal 1 - API
+cd apps/api
+DATABASE_URL=postgres://user@localhost:5432/tickets npm run db:init
+DATABASE_URL=postgres://user@localhost:5432/tickets MOCK_GATEWAY=true PORT=3101 npm run dev
+
+# terminal 2 - storefront
+cd apps/web
+API_BASE_URL=http://localhost:3101 npm run dev
+```
+
+`scripts/dev-local.sh` does both plus the migrations in one command.
 
 ---
 
@@ -117,8 +138,8 @@ sends to the gateway as `vnp_NotifyUrl`.
 ### Option B - ngrok
 
 ```bash
-ngrok http 3001
-export PUBLIC_BASE_URL=$(ngrok url 3001 | ...)
+ngrok http 3101
+export PUBLIC_BASE_URL=$(ngrok url 3101 | ...)
 ```
 
 ### Verifying locally
@@ -136,6 +157,25 @@ expects. Rejections are logged by the API.
 To exercise it without the real gateway, `apps/api/scripts/e2e.ts` signs a
 payload exactly the way VNPay does and posts it three times, proving the
 handler is idempotent.
+
+### The demo walkthrough (5 minutes)
+
+With `MOCK_GATEWAY=true` (the default) the whole flow runs locally:
+
+1. Open <http://localhost:3100> - pick an event.
+2. Choose a listing, set the quantity, press **Thanh toan**. The browser is
+   redirected to the simulated gateway page.
+3. Press **Thanh toan \<amount\> VND**. The page signs the payload and POSTs
+   it to the app's own IPN endpoint, exactly like VNPay does, then sends you
+   back to the order page.
+4. The order page shows **Da thanh toan (escrow)** and the money split.
+5. Switch the user (top right) to a seller and open **Vi cua toi**: the money
+   is in *Cho giai ngan (escrow)*, not yet *Khai dung*.
+6. Back on the event list press **Hoan tat su kien (giai ngan escrow)**.
+7. The seller's wallet now shows the money under *Khai dung*, and the order
+   is **Da giai ngan**.
+8. Open **So cai** to see every journal entry and the derived balances, with
+   a line that says the ledger is *can bang* (balanced).
 
 ---
 
