@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-tickets}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-tickets}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:postgres@db:5432/tickets}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3001}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
+      MOCK_GATEWAY: ${MOCK_GATEWAY:-true}
+      MOCK_GATEWAY_SECRET: ${MOCK_GATEWAY_SECRET:-mock-secret-local-dev}
+      VNPAY_URL: ${VNPAY_URL:-https://sandbox.vnpay.vn}
+      VNPAY_MERCHANT_CODE: ${VNPAY_MERCHANT_CODE:-}
+      VNPAY_SECRET_KEY: ${VNPAY_SECRET_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${API_PORT:-3001}:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      API_BASE_URL: ${API_BASE_URL:-http://api:3001}
+      NODE_ENV: development
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+  # Optional public tunnel so the payment gateway can reach the IPN endpoint.
+  # Start with:  docker compose --profile tunnel up --build
+  # The printed https://<random>.trycloudflare.com URL must be copied into
+  # PUBLIC_BASE_URL in .env and the stack restarted.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://api:3001
+    depends_on:
+      - api
+
+volumes:
+  db-data:

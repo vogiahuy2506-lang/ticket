@@ -1,0 +1,25 @@
+{
+  "name": "ticket-checkout-escrow",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Resale marketplace thin slice: ticket checkout with escrow and double-entry ledger",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:shared": "npm run build -w @tce/shared",
+    "build": "npm run build:shared && npm run build -w @tce/api && npm run build -w @tce/web",
+    "test": "npm run test -w @tce/shared && npm run test -w @tce/api",
+    "db:reset": "npm run db:reset -w @tce/api",
+    "dev": "npm run build:shared && concurrently -n api,web -c cyan,magenta \"npm run dev -w @tce/api\" \"npm run dev -w @tce/web\"",
+    "typecheck": "npm run typecheck -w @tce/api && npm run typecheck -w @tce/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

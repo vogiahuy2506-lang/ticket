@@ -1,0 +1,131 @@
+const API_BASE_URL =
+  process.env.API_BASE_URL ?? 'http://localhost:3001';
+
+/**
+ * Server-side data access to the Node backend.
+ * Every page that needs data is server-rendered (no client fetching).
+ */
+export async function apiFetch<T>(
+  path: string,
+  init?: RequestInit & { revalidate?: number },
+): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+    cache: init?.revalidate === 0 ? 'no-store' : undefined,
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`API ${path} failed with ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return (await res.json()) as T;
+}
+
+export const api = {
+  users: () =>
+    apiFetch<{
+      users: Array<{ id: string; name: string; role: string }>;
+    }>('/api/users'),
+
+  events: () =>
+    apiFetch<{
+      events: Array<{
+        id: string;
+        name: string;
+        venue: string;
+        starts_at: string;
+        status: string;
+        listing_count: number;
+        tickets_left: number;
+      }>;
+    }>('/api/events'),
+
+  event: (id: string) =>
+    apiFetch<{
+      event: {
+        id: string;
+        name: string;
+        venue: string;
+        starts_at: string;
+        status: string;
+      };
+      listings: Array<{
+        id: string;
+        title: string;
+        quantity_total: number;
+        quantity_sold: number;
+        quantity_available: number;
+        price_vnd: string;
+        seller_id: string;
+        seller_name: string;
+      }>;
+    }>(`/api/events/${id}`),
+
+  order: (id: string) =>
+    apiFetch<{
+      order: {
+        id: string;
+        buyer_id: string;
+        listing_id: string;
+        event_id: string;
+        seller_id: string;
+        quantity: number;
+        unit_price_vnd: string;
+        subtotal_vnd: string;
+        buyer_fee_vnd: string;
+        seller_fee_vnd: string;
+        gross_vnd: string;
+        seller_net_vnd: string;
+        platform_fee_vnd: string;
+        status: string;
+        created_at: string;
+        paid_at: string | null;
+        released_at: string | null;
+      };
+      fees: {
+        subtotalVnd: number;
+        buyerFeeVnd: number;
+        sellerFeeVnd: number;
+        grossVnd: number;
+        sellerNetVnd: number;
+        platformFeeVnd: number;
+      };
+      payments: Array<{
+        provider: string;
+        provider_txn_id: string;
+        amount_vnd: string;
+        status: string;
+        created_at: string;
+      }>;
+    }>(`/api/orders/${id}`),
+
+  wallet: (userId: string) =>
+    apiFetch<{
+      balances: {
+        userId: string;
+        pendingVnd: number;
+        availableVnd: number;
+        totalVnd: number;
+        platformFeeVnd: number;
+        gatewayCashVnd: number;
+      };
+      transactions: Array<{
+        txnId: string;
+        refType: string;
+        memo: string;
+        createdAt: string;
+        lines: Array<{
+          accountCode: string;
+          accountName: string;
+          direction: 'debit' | 'credit';
+          amountVnd: number;
+        }>;
+      }>;
+    }>(`/api/wallet/${userId}`),
+};
+
+export const API_BASE = API_BASE_URL;
