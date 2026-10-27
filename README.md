@@ -389,6 +389,10 @@ PENDING_PAYMENT --(IPN, verified)--> PAID --(event completed)--> RELEASED
   can never book the money twice.
 - The IPN is rejected (no ledger write) if the signature does not match, if
   the amount differs from the order, or if the order is unknown.
+- A *valid* notification that reports a **declined** payment is **applied**,
+  not dropped: the order becomes `FAILED` and the reserved tickets go back to
+  the listing. Only an invalid signature means "not trustworthy"; a declined
+  payment is a legitimate outcome that has to be settled.
 - **Checkout is idempotent too**: the client sends an `Idempotency-Key`
   (`UNIQUE (buyer_id, idempotency_key)`), so a double-tapped "Pay" button
   returns the original order instead of reserving a second batch of tickets.
@@ -625,6 +629,17 @@ Desktop's disk was full, so ports had to be made configurable).
   never be released from escrow. Fixed by rejecting that checkout with a
   `409`, and by cancelling any still-pending order when an event is
   completed.
+- A later manual pass through the UI found another real product bug: a
+  **declined** payment was treated as an untrustworthy notification and
+  dropped before it reached the order service. The order stayed
+  `PENDING_PAYMENT` forever and the tickets it had reserved were never
+  returned to the listing - so every declined payment silently leaked stock.
+  The root cause was using "the payment did not succeed" as a synonym for
+  "this notification is not trustworthy". Fixed by splitting the two in
+  `VerifyResult`: `signatureValid` decides whether the notification can be
+  applied, `ok` only says whether the payment succeeded. A declined payment
+  is now applied (order `FAILED`, ticket returned); only a bad signature is
+  dropped. The e2e script asserts this path.
 
 ---
 
@@ -655,3 +670,5 @@ be run as often as you like:
 9. assert the ledger is still balanced at every step
 10. assert a posted ledger entry cannot be updated or deleted (DB trigger)
 11. assert checkout for the now-completed event is rejected with `409`
+12. post a signed IPN that reports a *declined* payment -> the order becomes
+    `FAILED` and the reserved ticket is returned to the listing
