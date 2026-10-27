@@ -457,6 +457,18 @@ Honest list:
   money between two liability accounts; there is no bank transfer, no KYC
   and no reconciliation against the gateway's settlement report.
 
+### Pushing it to GitHub
+
+The repository ships a helper that creates the remote and pushes:
+
+```bash
+gh auth login          # once
+./scripts/push-to-github.sh
+```
+
+It defaults to `syn-mcj/ticket-checkout-escrow`; override with
+`REMOTE_REPO=owner/name ./scripts/push-to-github.sh`.
+
 ### What I would do next, in order
 
 1. Real auth (session + role) and lock the mutation endpoints, including
