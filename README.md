@@ -31,7 +31,8 @@ database comes up with:
 | seller | Le Huy (nguoi ban) |
 | admin | Ops Admin |
 
-Two events, five listings across the two sellers.
+Two events, six listings across the two sellers (one of them deliberately
+priced at an odd amount - 333,333 VND - so the fee rounding is visible).
 
 Useful commands:
 
