@@ -25,6 +25,17 @@ export interface CreatePaymentResult {
 }
 
 export interface VerifyResult {
+  /**
+   * True when the gateway's signature matched our secret key.
+   *
+   * This is deliberately separate from `ok`: `ok` means "the payment
+   * succeeded" (VNPay response code 00). A declined payment is a *valid*
+   * notification that must still be applied - the order is marked FAILED
+   * and the reserved tickets are given back. Only a bad signature means
+   * "this notification is not trustworthy, drop it".
+   */
+  signatureValid: boolean;
+  /** true when the payment succeeded (response code 00) */
   ok: boolean;
   code: string;
   message: string;

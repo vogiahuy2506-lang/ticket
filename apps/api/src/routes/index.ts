@@ -156,7 +156,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const provider = providerFor(deps);
     const verification = await provider.verifyNotification(payload);
 
-    if (!verification.ok) {
+    // Only an untrustworthy notification is dropped. A *valid* notification
+    // that reports a declined payment (response code != 00) must still be
+    // applied: the order becomes FAILED and the reserved tickets go back to
+    // the listing. Rejecting it here would strand those tickets forever.
+    if (!verification.signatureValid) {
       req.log.warn({ code: verification.code }, 'IPN rejected');
       return reply.code(200).send({ RspCode: '02', RspStatus: '02', Message: 'Invalid IPN' });
     }

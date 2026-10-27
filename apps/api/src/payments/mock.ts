@@ -71,6 +71,7 @@ export class MockProvider implements PaymentProvider {
     const expected = sign(rest);
     if (!vnp_SecureHash || expected !== vnp_SecureHash) {
       return {
+        signatureValid: false,
         ok: false,
         code: 'INVALID_SIGNATURE',
         message: 'Chu ky IPN khong hop le',
@@ -79,6 +80,7 @@ export class MockProvider implements PaymentProvider {
     }
     const ok = payload.vnp_ResponseCode === '00';
     return {
+      signatureValid: true,
       ok,
       code: payload.vnp_ResponseCode ?? 'UNKNOWN',
       message: payload.vnp_ResponseMessage ?? '',

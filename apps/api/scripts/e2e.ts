@@ -29,6 +29,23 @@ export function setApiBase(url: string): void {
   API = url.replace(/\/$/, '');
 }
 
+/**
+ * The fixture this run works on. The runner provisions a brand new event and
+ * listing and hands the ids over, so the assertions never depend on which
+ * event happens to be first in the list. Without this, a second run would
+ * pick up an event left over from a previous run and the balance deltas
+ * would not line up.
+ */
+let FIXTURE: { eventId: string; listingId: string } | null = null;
+
+export function setFixture(ids: { eventId: string; listingId: string }): void {
+  FIXTURE = ids;
+}
+
+export function getFixture(): { eventId: string; listingId: string } | null {
+  return FIXTURE;
+}
+
 function sign(params: Record<string, string>): string {
   const filtered = Object.keys(params)
     .sort()
@@ -79,10 +96,13 @@ export async function runAssertions(): Promise<void> {
   );
   // Use the fixture the runner provisioned. It is always a fresh, scheduled
   // event, so the assertions are independent of what the seed data or a
-  // previous run left behind. Pick the *newest* one - older E2E events from
-  // previous runs have already been completed by the release step.
+  // previous run left behind. When the runner is used the exact ids are
+  // handed over; the fallback below only matters when the assertions are
+  // run against an already-running stack.
+  const fixture = getFixture();
   const e2eEvents = events.filter((e) => e.name.startsWith('E2E event'));
   const event =
+    (fixture && events.find((e) => e.id === fixture.eventId)) ??
     e2eEvents.find((e) => e.status === 'scheduled') ??
     events.find((e) => e.status === 'scheduled') ??
     e2eEvents[0] ??
@@ -96,12 +116,15 @@ export async function runAssertions(): Promise<void> {
       id: string;
       title: string;
       price_vnd: string;
+      quantity_sold: number;
       quantity_available: number;
       seller_id: string;
     }>;
   }>(`/api/events/${event.id}`);
   const listing =
-    listings.find((l) => l.title === 'E2E listing') ?? listings[0];
+    (fixture && listings.find((l) => l.id === fixture.listingId)) ??
+    listings.find((l) => l.title === 'E2E listing') ??
+    listings[0];
   if (!listing) {
     throw new Error('No listing on the E2E event');
   }
@@ -250,13 +273,79 @@ export async function runAssertions(): Promise<void> {
     `the replayed IPN booked the money exactly once (found ${capturesForOrder.length})`,
   );
 
+  // -------------------------------------------- a declined payment
+  // A valid notification that reports a *failed* payment must still be
+  // applied: the order becomes FAILED and the reserved tickets go back to
+  // the listing. Dropping it would strand those tickets forever - a real
+  // bug that only shows up when the buyer declines at the gateway.
+  const soldBeforeDecline = (
+    await json<{ listings: Array<{ id: string; quantity_sold: number }> }>(
+      `/api/events/${event.id}`,
+    )
+  ).listings.find((l) => l.id === listing.id)?.quantity_sold;
+
+  const declineCheckout = await json<{ orderId: string; grossVnd: number }>(
+    '/api/checkout',
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': `e2e-decline-${Date.now()}` },
+      body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+    },
+  );
+  const declineOrderId = declineCheckout.orderId;
+
+  const declinedPayload: Record<string, string> = {
+    vnp_Version: '2.1',
+    vnp_Command: 'pay',
+    vnp_OrderType: 'other',
+    vnp_Amount: String(declineCheckout.grossVnd),
+    vnp_Currency: 'VND',
+    vnp_TxnRef: declineOrderId,
+    vnp_OrderInfo: `Thanh toan don hang ${declineOrderId.slice(0, 8)}`,
+    vnp_ReturnUrl: 'http://localhost:3010/orders/x',
+    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
+    vnp_TransactionId: `E2EFAIL${Date.now()}`,
+    vnp_BankCode: 'NCB',
+    vnp_ResponseCode: '99',
+    vnp_ResponseMessage: 'Giao dich bi huy',
+  };
+  declinedPayload.vnp_SecureHash = sign(declinedPayload);
+
+  const declineRes = await fetch(`${API}/api/ipn/vnpay`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(declinedPayload).toString(),
+  });
+  const declineBody = (await declineRes.json()) as { RspCode: string };
+  assert(
+    declineBody.RspCode === '00',
+    'a declined payment is still a valid notification (accepted, not dropped)',
+  );
+
+  const declinedOrder = await json<{ order: { status: string } }>(
+    `/api/orders/${declineOrderId}`,
+  );
+  assert(declinedOrder.order.status === 'FAILED', 'a declined payment marks the order FAILED');
+
+  // The ticket that was reserved for the declined order must be back on the
+  // listing - otherwise the stock leaks away with every failed payment.
+  const listingAfterDecline = await json<{
+    listings: Array<{ id: string; quantity_sold: number }>;
+  }>(`/api/events/${event.id}`);
+  const soldAfterDecline = listingAfterDecline.listings.find(
+    (l) => l.id === listing.id,
+  )?.quantity_sold;
+  assert(
+    soldAfterDecline === soldBeforeDecline,
+    'a declined payment returns the reserved ticket to the listing',
+  );
+
   // ------------------------------------------------- escrow release
   const released = await json<{ released: number; releasedVnd: number }>(
     `/api/events/${event.id}/complete`,
     { method: 'POST' },
   );
   assert(released.released >= 1, `released ${released.released} order(s) from escrow`);
-
   const after = await json<{
     balances: Array<{ accountCode: string; balanceVnd: number }>;
   }>('/api/ledger/balances');

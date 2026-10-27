@@ -119,6 +119,7 @@ export class VnPayProvider implements PaymentProvider {
   async verifyNotification(payload: Record<string, string>): Promise<VerifyResult> {
     if (!verifySignature(payload, this.config.secretKey)) {
       return {
+        signatureValid: false,
         ok: false,
         code: 'INVALID_SIGNATURE',
         message: 'Chu ky IPN khong hop le',
@@ -131,6 +132,7 @@ export class VnPayProvider implements PaymentProvider {
     const amountVnd = Number(payload.vnp_Amount ?? 0);
 
     return {
+      signatureValid: true,
       ok,
       code: responseCode || 'UNKNOWN',
       message: payload.vnp_ResponseMessage ?? '',

@@ -28,7 +28,7 @@ import { seed } from '../src/db/seed.js';
  * Creates a throwaway event with one listing, so the assertions never depend
  * on what the seed data happens to look like.
  */
-async function provisionFixture(): Promise<void> {
+async function provisionFixture(): Promise<{ eventId: string; listingId: string }> {
   const sql = getSql();
 
   const sellers = await sql<{ id: string }[]>`
@@ -44,12 +44,14 @@ async function provisionFixture(): Promise<void> {
     RETURNING id
   `;
 
-  await sql`
+  const listings = await sql<{ id: string }[]>`
     INSERT INTO listings (event_id, seller_id, title, quantity_total, price_vnd)
     VALUES (${events[0]!.id}, ${sellers[0].id}, 'E2E listing', 100, 1200000)
+    RETURNING id
   `;
 
   console.log('[e2e] fixture provisioned');
+  return { eventId: events[0]!.id, listingId: listings[0]!.id };
 }
 
 async function waitForServer(base: string, timeoutMs = 30_000): Promise<void> {
@@ -94,7 +96,7 @@ async function main(): Promise<void> {
   await migrate();
   await seed();
 
-  await provisionFixture();
+  const fixture = await provisionFixture();
   const app = await buildServer();
 
   try {
@@ -102,8 +104,9 @@ async function main(): Promise<void> {
     await waitForServer(base);
     console.log(`[e2e] API is up on ${base}`);
 
-    const { runAssertions, setApiBase } = await import('./e2e.js');
+    const { runAssertions, setApiBase, setFixture } = await import('./e2e.js');
     setApiBase(base);
+    setFixture(fixture);
     await runAssertions();
     console.log('\n[e2e] done.');
   } finally {
