@@ -39,7 +39,10 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   reactStrictMode: true,
   env: {
-    API_BASE_URL: process.env.API_BASE_URL ?? 'http://localhost:3111',
+    // The storefront talks to the API over HTTP. On the host that is the
+    // published port from .env; inside compose the web container uses
+    // http://api:3001, which docker-compose.yml sets explicitly.
+    API_BASE_URL: process.env.API_BASE_URL ?? 'http://localhost:3101',
   },
 };
 

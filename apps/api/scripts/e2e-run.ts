@@ -21,6 +21,8 @@
 
 import { buildServer } from '../src/server.js';
 import { getSql } from '../src/db/client.js';
+import { migrate } from '../src/db/migrate.js';
+import { seed } from '../src/db/seed.js';
 
 /**
  * Creates a throwaway event with one listing, so the assertions never depend
@@ -87,8 +89,12 @@ async function main(): Promise<void> {
   process.env.MOCK_GATEWAY = process.env.MOCK_GATEWAY ?? 'true';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'error';
 
-  await provisionFixture();
+  // A fresh clone has no schema and no seed users yet, so the runner brings
+  // the database up to date itself. Both steps are idempotent.
+  await migrate();
+  await seed();
 
+  await provisionFixture();
   const app = await buildServer();
 
   try {

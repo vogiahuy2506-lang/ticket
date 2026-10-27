@@ -19,7 +19,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Then open <http://localhost:3100>.
+Then open <http://localhost:3000>.
+
+> Copy the commands one line at a time. A trailing `# comment` on the same
+> line would be passed to the command as an argument (`docker compose` would
+> answer `no such service: #`).
 
 The API container runs the migrations and the seed automatically, so the
 database comes up with:
@@ -37,64 +41,94 @@ priced at an odd amount - 333,333 VND - so the fee rounding is visible).
 Useful commands:
 
 ```bash
-docker compose logs -f api      # API logs
-docker compose exec api npm run db:reset -w @tce/api   # wipe and re-seed
-npm test                        # unit tests (fees + ledger)
-npm run e2e                     # end-to-end money flow (boots its own API)
+docker compose logs -f api
+docker compose exec api npm run db:reset -w @tce/api
+npm test
+npm run e2e
 ```
 
-> `npm run e2e` **starts the API itself**, provisions a throwaway event, and
-> runs the whole money flow against it. It needs nothing but a reachable
-> database, so a reviewer can clone the repo and run it with one command.
-> It is repeatable: each run creates its own fixture and asserts *deltas*,
-> so running it twice in a row passes both times.
+| Command | What it does |
+| --- | --- |
+| `docker compose logs -f api` | tail the API logs |
+| `docker compose exec api npm run db:reset -w @tce/api` | wipe and re-seed the database |
+| `npm test` | unit tests (fees + ledger) |
+| `npm run e2e` | end-to-end money flow (boots its own API) |
+
+> `npm run e2e` **starts the API itself**, applies the migrations, seeds the
+> users, provisions a throwaway event and runs the whole money flow against
+> it. It needs nothing but a reachable database, so a reviewer can clone the
+> repo and run it with one command. It is repeatable: each run creates its
+> own fixture and asserts *deltas*, so running it twice in a row passes both
+> times.
+>
+> On a fresh clone, start only the database first:
+>
+> ```bash
+> docker compose up -d db
+> npm install
+> npm run e2e
+> ```
 >
 > Inside Docker, run it against the compose database:
 >
 > ```bash
-> docker compose exec -e DATABASE_URL=postgres://postgres:postgres@db:5432/tickets \
->   api npm run e2e
+> docker compose exec api npm run e2e
 > ```
 
-> The default host ports are **3100** (storefront), **3101** (API) and
+> The default host ports are **3000** (storefront), **3101** (API) and
 > **55432** (Postgres) so the stack does not collide with a local PostgreSQL
 > install. They are all configurable in `.env` (`WEB_PORT`, `API_PORT`,
 > `DB_PORT`).
+>
+> A single `.env` drives both the Docker stack and a host-run process. The
+> only difference is which hostnames are used: inside compose the API
+> reaches the database as `db` and the storefront reaches the API as
+> `api`, while on the host both use `localhost`. `docker-compose.yml`
+> hard-codes the container-side values so the two can never get mixed up.
 
 ### Running without Docker
 
-The repo root ships a `.env.local` that points the apps at the **host**
-addresses of the compose stack (Postgres on `localhost:55432`, API on
-`localhost:3111`). It is git-ignored and takes precedence over `.env`, so
-`npm run dev` works out of the box:
+The apps can run directly on the host while Postgres stays in Docker. Start
+only the database, then run the apps from the repo root:
 
 ```bash
+docker compose up -d db
 npm install
 npm run build:shared
-npm run db:init          # migrate + seed the Postgres in the compose stack
-npm run dev              # API on :3111, storefront on :3000
+npm run db:init
+npm run dev
 ```
 
-Then open <http://localhost:3000>.
+The storefront comes up on <http://localhost:3000> and the API on
+<http://localhost:3101>.
 
-> `.env` is Docker-oriented (`DATABASE_URL` points at the `db` service name,
-> ports 3100/3101). `.env.local` overrides those values for host-run
-> processes. Real environment variables always win over both files.
+> `.env` (copied from `.env.example`) points `DATABASE_URL` at
+> `localhost:55432`, which is the **host port** of the compose database. That
+> is the right value for processes running on the host. Inside the compose
+> network the API uses the `db` service name instead - `docker-compose.yml`
+> sets that explicitly, so the two never get mixed up.
+>
+> `.env.local`, if you create one, overrides `.env`. Real environment
+> variables always win over both files.
 
-If you prefer to run the apps directly against a local PostgreSQL:
+If you prefer to run against a local PostgreSQL instead of the compose one:
 
 ```bash
 npm install
 npm run build:shared
+```
 
+```bash
 # terminal 1 - API
 cd apps/api
 DATABASE_URL=postgres://user@localhost:5432/tickets npm run db:init
-DATABASE_URL=postgres://user@localhost:5432/tickets MOCK_GATEWAY=true PORT=3111 npm run dev
+DATABASE_URL=postgres://user@localhost:5432/tickets MOCK_GATEWAY=true PORT=3101 npm run dev
+```
 
+```bash
 # terminal 2 - storefront
 cd apps/web
-API_BASE_URL=http://localhost:3111 npm run dev
+API_BASE_URL=http://localhost:3101 npm run dev
 ```
 
 `scripts/dev-local.sh` does both plus the migrations in one command.
@@ -194,7 +228,7 @@ handler is idempotent.
 
 With `MOCK_GATEWAY=true` (the default) the whole flow runs locally:
 
-1. Open <http://localhost:3100> - pick an event.
+1. Open <http://localhost:3000> - pick an event.
 2. Choose a listing, set the quantity, press **Thanh toan**. The browser is
    redirected to the simulated gateway page.
 3. Press **Thanh toan \<amount\> VND**. The page signs the payload and POSTs
@@ -411,6 +445,21 @@ apps/web/
 17. **The e2e test provisions its own fixture** and asserts *deltas* rather
     than absolute balances. It can therefore run repeatedly against the same
     database without a reset, which is what a reviewer will actually do.
+18. **One `.env` drives both Docker and a host-run process.** The values in
+    it are always *host* values (`localhost`). The container-side values
+    (`db`, `api`) are hard-coded in `docker-compose.yml` instead of being
+    interpolated from `.env`, because the same variable cannot mean both
+    things at once. This was a bug I hit myself: an earlier `.env` pointed
+    `DATABASE_URL` at `db`, so `npm run e2e` on the host failed with
+    `getaddrinfo ENOTFOUND db`.
+19. **`npm run e2e` migrates and seeds first.** A fresh clone has an empty
+    database, so the runner applies the schema and the seed (both
+    idempotent) before provisioning its fixture. The reviewer needs exactly
+    one command, not three.
+20. **A role check lives in the server action, not only in the UI.** The
+    "complete event" button is hidden for non-admins, and the server action
+    re-checks the role. A Next.js server action is an HTTP endpoint, so
+    hiding the button is not authorization.
 
 ---
 

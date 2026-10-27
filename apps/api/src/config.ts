@@ -24,11 +24,11 @@ export interface AppConfig {
 export function loadConfig(): AppConfig {
   const publicBaseUrl = required(
     'PUBLIC_BASE_URL',
-    'http://localhost:3001',
+    'http://localhost:3101',
   ).replace(/\/$/, '');
 
   return {
-    port: Number(process.env.PORT ?? 3001),
+    port: Number(process.env.PORT ?? 3101),
     databaseUrl: required(
       'DATABASE_URL',
       'postgres://postgres:postgres@localhost:5432/tickets',

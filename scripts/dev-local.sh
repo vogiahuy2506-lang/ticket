@@ -4,9 +4,13 @@
 set -e
 cd "$(dirname "$0")/.."
 
-DB_URL="${DB_URL:-postgres://$(whoami)@127.0.0.1:5433/tce_local}"
-API_PORT="${API_PORT:-3011}"
-WEB_PORT="${WEB_PORT:-3010}"
+# Defaults match the compose stack: the database is the one published by
+# `docker compose up -d db` on DB_PORT (55432), and the apps listen on the
+# same ports the compose services are published on. Override any of them
+# with an environment variable if the ports are taken.
+DB_URL="${DB_URL:-postgres://postgres:postgres@127.0.0.1:55432/tickets}"
+API_PORT="${API_PORT:-3101}"
+WEB_PORT="${WEB_PORT:-3000}"
 
 cleanup() {
   kill ${API_PID:-} ${WEB_PID:-} 2>/dev/null || true

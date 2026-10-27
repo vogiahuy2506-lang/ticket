@@ -20,8 +20,15 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:postgres@db:5432/tickets}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3001}
+      # Hard-coded on purpose: inside the compose network the database is
+      # reached by service name, never by the host port. Do NOT reuse
+      # ${DATABASE_URL} here - that variable is meant for processes running
+      # on the host (npm run dev / npm run e2e).
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-tickets}
+      # The container always listens on 3001 internally; API_PORT publishes it
+      # on the host. A host-run API uses PORT from .env instead.
+      PORT: 3001
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3101}
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
       MOCK_GATEWAY: ${MOCK_GATEWAY:-true}
       MOCK_GATEWAY_SECRET: ${MOCK_GATEWAY_SECRET:-mock-secret-local-dev}
@@ -30,7 +37,9 @@ services:
       VNPAY_SECRET_KEY: ${VNPAY_SECRET_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
-      - "${API_PORT:-3001}:3001"
+      # The container always listens on 3001; API_PORT is the host port it
+      # is published on, and the same port a host-run API would use.
+      - "${API_PORT:-3101}:3001"
     depends_on:
       db:
         condition: service_healthy
@@ -40,7 +49,9 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
     environment:
-      API_BASE_URL: ${API_BASE_URL:-http://api:3001}
+      # Hard-coded on purpose: inside the compose network the storefront
+      # reaches the API by service name, never by the host port.
+      API_BASE_URL: http://api:3001
       NODE_ENV: development
     ports:
       - "${WEB_PORT:-3000}:3000"

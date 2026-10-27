@@ -7,3 +7,6 @@ dist
 .DS_Store
 coverage
 *.tsbuildinfo
+
+# a nested clone of this repo (created by hand)
+ticket/
