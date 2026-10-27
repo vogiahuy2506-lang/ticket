@@ -17,7 +17,6 @@ REMOTE_REPO="${REMOTE_REPO:-vogiahuy2506-lang/ticket}"
 cd "$REPO_DIR"
 
 echo "==> Checking GitHub authentication"
-echo "==> Checking GitHub authentication"
 
 # The repository may already exist and the machine may already have
 # credentials (a PAT in the keychain, for example), so the check is: can we

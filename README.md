@@ -16,10 +16,17 @@ double-entry ledger.
 
 ```bash
 cp .env.example .env
-docker compose up --build
+./scripts/dev.sh
 ```
 
 Then open <http://localhost:3000>.
+
+> `scripts/dev.sh` is `docker compose up --build` plus one thing: it stops
+> any container that is still holding one of the ports first. A previous
+> clone of this repo keeps running after you close the terminal, and the
+> next `docker compose up` would fail with
+> `port is already allocated`. Plain `docker compose up --build` works fine
+> too, once nothing else is holding the ports.
 
 > Copy the commands one line at a time. A trailing `# comment` on the same
 > line would be passed to the command as an argument (`docker compose` would
@@ -85,6 +92,43 @@ npm run e2e
 > reaches the database as `db` and the storefront reaches the API as
 > `api`, while on the host both use `localhost`. `docker-compose.yml`
 > hard-codes the container-side values so the two can never get mixed up.
+
+### Troubleshooting
+
+**`Bind for 0.0.0.0:55432 failed: port is already allocated`**
+
+Something else on your machine already uses that port - most often a
+*previous* clone of this repo that is still running. Docker keeps the
+container alive even after the terminal is closed, so the ports stay taken:
+
+```bash
+docker ps --format "{{.Names}}\t{{.Ports}}"
+docker compose down
+```
+
+If the leftover stack belongs to a different clone (a different directory,
+therefore a different Compose project name), stop it by container name:
+
+```bash
+docker rm -f <project>-db-1 <project>-api-1 <project>-web-1
+```
+
+Or simply move your copy to a free port - edit `DB_PORT`, `API_PORT` and
+`WEB_PORT` in `.env`. Remember to change `DATABASE_URL`, `PUBLIC_BASE_URL`,
+`API_BASE_URL` and `WEB_BASE_URL` to match, because those carry the port
+numbers too.
+
+**`npm run e2e` fails with `getaddrinfo ENOTFOUND db`**
+
+`DATABASE_URL` still points at the Docker service name `db`. That hostname
+only resolves inside the Compose network. On the host it must be
+`localhost:<DB_PORT>`, which is what `.env.example` now contains.
+
+**`docker compose up` says `no such service: #`**
+
+A `#` comment was pasted onto the end of a `docker compose` line. Compose
+is not a shell - it reads the `#` as a service name. Keep the comment on
+its own line.
 
 ### Running without Docker
 
@@ -379,6 +423,10 @@ apps/web/
   src/app/wallet/           pending / available balances
   src/app/ledger/           the journal and all account balances
   src/app/actions.ts        server actions: checkout, switch user, complete event
+scripts/
+  dev.sh                    starts the stack, freeing the ports it needs first
+  dev-local.sh              runs the apps on the host against the compose db
+  push-to-github.sh         creates the remote (if needed) and pushes
 ```
 
 ---
