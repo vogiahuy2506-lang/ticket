@@ -151,7 +151,8 @@ export default async function EventPage({
 
               <p className="text-[11px] leading-relaxed text-ink-400">
                 Ban giu phan chenh lech {formatVnd(buyerFee + sellerFee)}/ve trong
-                escrow den khi su kien dien ra.
+                escrow den khi su kien dien ra. Ve duoc giu 15 phut - het thoi gian
+                thi ve duoc tra lai cho nguoi ban.
               </p>
             </form>
           );

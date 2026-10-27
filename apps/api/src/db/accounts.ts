@@ -19,6 +19,7 @@ import { getSql } from './client.js';
 export const ACCOUNT_CODES = {
   gatewayCash: 'asset:gateway_cash',
   platformFee: 'revenue:platform_fee',
+  refundPayable: 'liability:refund_payable',
 } as const;
 
 export function pendingAccountCode(userId: string): string {
@@ -42,7 +43,8 @@ export async function ensurePlatformAccounts(sql: Db): Promise<void> {
     INSERT INTO ledger_accounts (code, kind, name)
     VALUES
       (${ACCOUNT_CODES.gatewayCash}, 'asset', 'Tien tai cong thanh toan'),
-      (${ACCOUNT_CODES.platformFee}, 'revenue', 'Phi dich vu cua san')
+      (${ACCOUNT_CODES.platformFee}, 'revenue', 'Phi dich vu cua san'),
+      (${ACCOUNT_CODES.refundPayable}, 'liability', 'Tien phai hoan cho nguoi mua')
     ON CONFLICT (code) DO NOTHING
   `;
 }

@@ -42,6 +42,20 @@ const STATUS_META: Record<
     dot: 'bg-ink-400',
     hint: 'Don hang da bi huy.',
   },
+  EXPIRED: {
+    label: 'Het thoi gian giu ve',
+    cls: 'bg-ink-100 text-ink-700 ring-ink-200',
+    dot: 'bg-ink-400',
+    hint:
+      'Ban khong hoan tat thanh toan trong 15 phut, so ve da duoc tra lai cho nguoi ban.',
+  },
+  REFUND_REQUIRED: {
+    label: 'Da thanh toan - se duoc hoan tien',
+    cls: 'bg-orange-50 text-orange-800 ring-orange-200',
+    dot: 'bg-orange-500',
+    hint:
+      'Tien da den cong nhung thoi gian giu ve da het, ve da duoc ban cho nguoi khac. Tien cua ban se duoc hoan lai.',
+  },
 };
 
 /**

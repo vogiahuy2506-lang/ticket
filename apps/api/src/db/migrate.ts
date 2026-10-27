@@ -1,15 +1,37 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSql } from './client.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Locates `schema.sql`.
+ *
+ * When the API runs from the sources (`tsx src/db/init.ts`) the file sits
+ * next to this module. When it runs from the compiled output
+ * (`node dist/db/init.js`) TypeScript did not copy the .sql file, so we
+ * fall back to the source directory. Without the fallback the compiled
+ * build cannot migrate a fresh database at all.
+ */
+function findSchema(): string {
+  const candidates = [
+    join(here, 'schema.sql'),
+    join(here, '..', '..', 'src', 'db', 'schema.sql'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `schema.sql not found - looked in:\n${candidates.map((c) => `  - ${c}`).join('\n')}`,
+  );
+}
+
 export async function migrate(): Promise<void> {
   const sql = getSql();
   // gen_random_uuid() needs pgcrypto on Postgres < 13; built-in from 13+.
   await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-  const schema = readFileSync(join(here, 'schema.sql'), 'utf8');
+  const schema = readFileSync(findSchema(), 'utf8');
   await sql.unsafe(schema);
   console.log('[migrate] schema applied');
 }

@@ -152,7 +152,7 @@ export function StatCard({
   label: string;
   value: ReactNode;
   hint?: ReactNode;
-  tone?: 'default' | 'success' | 'warning' | 'brand' | 'muted';
+  tone?: 'default' | 'success' | 'warning' | 'brand' | 'muted' | 'danger';
 }) {
   const valueClass = {
     default: 'text-ink-900',
@@ -160,6 +160,7 @@ export function StatCard({
     warning: 'text-amber-700',
     brand: 'text-brand-700',
     muted: 'text-ink-500',
+    danger: 'text-red-700',
   }[tone];
 
   return (

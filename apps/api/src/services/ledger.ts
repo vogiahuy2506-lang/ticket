@@ -346,3 +346,37 @@ export async function postEscrowRelease(
     ],
   });
 }
+
+/**
+ * Books a payment that arrived after the ticket reservation had expired.
+ *
+ * The buyer paid, but the tickets were already sold to somebody else, so the
+ * seller must not receive the money. The amount leaves the gateway cash and
+ * becomes a liability towards the buyer - the platform owes them a refund.
+ * The actual refund API call is out of scope for this test task, so the
+ * money stays in `liability:refund_payable` until an operator refunds it.
+ */
+export async function postLatePaymentRefund(
+  sql: Db,
+  args: { orderId: string; amountVnd: number; memo: string },
+): Promise<string> {
+  await ensurePlatformAccounts(sql);
+
+  return postTransaction(sql, {
+    refType: 'LATE_PAYMENT_REFUND',
+    refId: args.orderId,
+    memo: args.memo,
+    lines: [
+      {
+        accountCode: ACCOUNT_CODES.gatewayCash,
+        direction: 'debit',
+        amountVnd: args.amountVnd,
+      },
+      {
+        accountCode: ACCOUNT_CODES.refundPayable,
+        direction: 'credit',
+        amountVnd: args.amountVnd,
+      },
+    ],
+  });
+}

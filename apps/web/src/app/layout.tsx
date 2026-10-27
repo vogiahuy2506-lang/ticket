@@ -22,6 +22,9 @@ const NAV = [
   { href: '/ledger', label: 'So cai' },
 ];
 
+/** Only shown to an operator. */
+const ADMIN_NAV = { href: '/admin', label: 'Quan tri' };
+
 export default async function RootLayout({
   children,
 }: {
@@ -88,6 +91,14 @@ export default async function RootLayout({
                   {item.label}
                 </Link>
               ))}
+              {current?.role === 'admin' ? (
+                <Link
+                  href={ADMIN_NAV.href}
+                  className="rounded-lg bg-brand-50 px-3 py-1.5 font-medium text-brand-700 transition hover:bg-brand-100"
+                >
+                  {ADMIN_NAV.label}
+                </Link>
+              ) : null}
             </div>
           </nav>
         </header>

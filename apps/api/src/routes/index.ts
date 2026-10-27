@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { checkoutSchema, computeFees } from '@tce/shared';
 import { providerFor, type AppDeps } from './helpers.js';
 import {
   createOrder,
+  expireStaleOrders,
   getOrderStatus,
   handleIpn,
   OrderError,
@@ -14,6 +15,7 @@ import {
   getUserBalances,
   listTransactions,
 } from '../services/ledger.js';
+import { getAdminOverview, listAllOrders } from '../services/admin.js';
 import { registerMockGatewayRoutes } from './mock-gateway.js';
 import { withTx } from '../db/types.js';
 
@@ -31,6 +33,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // --------------------------------------------------------------- events
   app.get('/api/events', async () => {
+    // Lazy sweep: release the reservations of abandoned checkouts before
+    // the ticket counts are shown, so a buyer never sees a ticket that is
+    // actually free.
+    await expireStaleOrders(sql);
     const events = await sql`
       SELECT e.id, e.name, e.venue, e.starts_at, e.status,
              COUNT(l.id)::int AS listing_count,
@@ -44,6 +50,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get<{ Params: { id: string } }>('/api/events/:id', async (req, reply) => {
+    await expireStaleOrders(sql);
     const events = await sql`
       SELECT id, name, venue, starts_at, status FROM events WHERE id = ${req.params.id}
     `;
@@ -141,17 +148,53 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Gateway notification endpoint (IPN / webhook).
    *
-   * Contract with the gateway: always answer with HTTP 200 and a JSON body
-   * {"RspCode":"00","RspStatus":"00"} so the gateway stops retrying, but only
-   * after the notification has been verified and applied.
+   * Contract with the gateway:
+   *  - VNPay notifies with a **GET** request; a POST is accepted too so the
+   *    local mock can post the same payload.
+   *  - the answer is always HTTP 200 with a JSON body
+   *    {"RspCode":"00","Message":"..."} so the gateway stops retrying.
+   *  - RspCode follows the official list: 00 success, 01 order not found,
+   *    02 already confirmed, 04 invalid amount, 97 invalid signature,
+   *    99 invalid request.
    */
-  app.post('/api/ipn/vnpay', async (req, reply) => {
-    const payload = Object.fromEntries(
-      Object.entries(req.body as Record<string, unknown>).map(([k, v]) => [
+  const readIpnPayload = (req: FastifyRequest): Record<string, string> => {
+    const source =
+      req.method === 'GET'
+        ? (req.query as Record<string, unknown>)
+        : ((req.body ?? {}) as Record<string, unknown>);
+
+    return Object.fromEntries(
+      Object.entries(source).map(([k, v]) => [
         k,
         v === undefined || v === null ? '' : String(v),
       ]),
     );
+  };
+
+  const handleIpnRequest = async (req: FastifyRequest, reply: FastifyReply) => {
+    const payload = readIpnPayload(req);
+
+    // Always log the raw notification - even the ones we reject. This is
+    // the reconciliation log an operator compares against the gateway's
+    // own transaction list to find lost notifications.
+    const logEvent = async (signatureValid: boolean, applied: boolean) => {
+      try {
+        await sql`
+          INSERT INTO payment_events (
+            txn_ref, provider_txn_id, signature_valid, applied, payload
+          )
+          VALUES (
+            ${payload.vnp_TxnRef ?? null},
+            ${payload.vnp_TransactionNo ?? payload.vnp_TransactionId ?? null},
+            ${signatureValid},
+            ${applied},
+            ${sql.json(payload as never)}
+          )
+        `;
+      } catch (err) {
+        req.log.error({ err }, 'could not write the payment_events log');
+      }
+    };
 
     const provider = providerFor(deps);
     const verification = await provider.verifyNotification(payload);
@@ -162,17 +205,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // the listing. Rejecting it here would strand those tickets forever.
     if (!verification.signatureValid) {
       req.log.warn({ code: verification.code }, 'IPN rejected');
-      return reply.code(200).send({ RspCode: '02', RspStatus: '02', Message: 'Invalid IPN' });
+      await logEvent(false, false);
+      return reply.code(200).send({ RspCode: '97', Message: 'Invalid signature' });
     }
 
     const orderId = verification.orderId ?? payload.vnp_TxnRef;
     if (!orderId) {
-      return reply.code(200).send({ RspCode: '02', RspStatus: '02', Message: 'Missing order' });
+      await logEvent(true, false);
+      return reply.code(200).send({ RspCode: '99', Message: 'Invalid request' });
     }
 
     const order = await getOrderStatus(sql, orderId);
     if (!order) {
-      return reply.code(200).send({ RspCode: '02', RspStatus: '02', Message: 'Unknown order' });
+      await logEvent(true, false);
+      return reply.code(200).send({ RspCode: '01', Message: 'Order not found' });
     }
 
     if (Number(order.gross_vnd) !== verification.amountVnd) {
@@ -180,7 +226,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         { orderId, expected: order.gross_vnd, received: verification.amountVnd },
         'IPN amount mismatch',
       );
-      return reply.code(200).send({ RspCode: '02', RspStatus: '02', Message: 'Amount mismatch' });
+      await logEvent(true, false);
+      return reply.code(200).send({ RspCode: '04', Message: 'Invalid amount' });
     }
 
     const result = await handleIpn(sql, {
@@ -193,13 +240,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       raw: payload,
     });
 
+    await logEvent(true, result.applied);
+
     req.log.info(
       { orderId, status: result.status, applied: result.applied },
       'IPN applied',
     );
 
-    return reply.code(200).send({ RspCode: '00', RspStatus: '00', Message: 'Success' });
-  });
+    return reply.code(200).send({ RspCode: '00', Message: 'Confirm Success' });
+  };
+
+  app.get('/api/ipn/vnpay', handleIpnRequest);
+  app.post('/api/ipn/vnpay', handleIpnRequest);
 
   // --------------------------------------------------------------- escrow
   /**
@@ -294,6 +346,41 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       deleteRejected: del.rejected,
       detail: upd.error ?? del.error,
     };
+  });
+
+  // ---------------------------------------------------------------- admin
+  /**
+   * Operations dashboard data.
+   *
+   * The brief says no authentication is needed, so the API does not check a
+   * role here - the storefront gates the page on the selected user. The
+   * numbers are all derived from the ledger, so the dashboard can never
+   * disagree with the books.
+   */
+  app.get('/api/admin/overview', async () => {
+    return await getAdminOverview(sql);
+  });
+
+  app.get('/api/admin/orders', async () => {
+    return { orders: await listAllOrders(sql, 100) };
+  });
+
+  /**
+   * The raw gateway notifications, newest first.
+   *
+   * This is the reconciliation log: every notification the gateway sent is
+   * here, including the ones we rejected (bad signature, unknown order,
+   * wrong amount). An operator compares it against the gateway's own
+   * transaction list to find notifications that never arrived.
+   */
+  app.get('/api/admin/payment-events', async () => {
+    const events = await sql`
+      SELECT txn_ref, provider_txn_id, signature_valid, applied, payload, received_at
+      FROM payment_events
+      ORDER BY received_at DESC, id DESC
+      LIMIT 100
+    `;
+    return { events };
   });
 
   await registerMockGatewayRoutes(app);

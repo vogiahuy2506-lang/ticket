@@ -40,7 +40,11 @@ export function loadConfig(): AppConfig {
     ),
     mockGateway: process.env.MOCK_GATEWAY === 'true',
     vnpay: {
-      vnpayUrl: process.env.VNPAY_URL ?? 'https://sandbox.vnpay.vn',
+      // The payment page the buyer is redirected to. This is the endpoint
+      // the official VNPay samples use.
+      vnpayUrl:
+        process.env.VNPAY_URL ??
+        'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html',
       merchantCode: process.env.VNPAY_MERCHANT_CODE ?? '',
       secretKey: process.env.VNPAY_SECRET_KEY ?? '',
     },

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildSignMessage, verifySignature } from '../src/payments/vnpay.js';
+import crypto from 'node:crypto';
+import {
+  buildSignMessage,
+  formatVnTime,
+  verifySignature,
+  VNPAY_AMOUNT_FACTOR,
+} from '../src/payments/vnpay.js';
 import { postTransaction } from '../src/services/ledger.js';
 
 /**
@@ -21,7 +27,28 @@ describe('VNPay signature', () => {
       secret,
     );
     expect(a).toBe(b);
-    expect(a).toHaveLength(64);
+    // HMAC-SHA512 -> 64 bytes -> 128 hex characters.
+    expect(a).toHaveLength(128);
+  });
+
+  it('matches the official VNPay algorithm (HMAC-SHA512 over sorted, urlencoded params)', () => {
+    // The VNPay samples build the hash data as
+    //   ksort(params) -> "urlencode(key)=urlencode(value)&..."
+    // and then hash it with HMAC-SHA512 and the secret key.
+    const params = {
+      vnp_Amount: '1000000',
+      vnp_TxnRef: '166117',
+      vnp_OrderInfo: 'Thanh toan don hang thoi gian: 2023-12-07 17:00:44',
+    };
+    const hashData =
+      'vnp_Amount=1000000&vnp_OrderInfo=Thanh+toan+don+hang+thoi+gian%3A+2023-12-07+17%3A00%3A44&vnp_TxnRef=166117';
+
+    const expected = crypto
+      .createHmac('sha512', secret)
+      .update(hashData, 'utf8')
+      .digest('hex');
+
+    expect(buildSignMessage(params, secret)).toBe(expected);
   });
 
   it('ignores empty parameters', () => {
@@ -56,6 +83,21 @@ describe('VNPay signature', () => {
 
     // missing signature
     expect(verifySignature(params, secret)).toBe(false);
+  });
+});
+
+describe('VNPay wire format', () => {
+  it('multiplies the amount by 100', () => {
+    // The gateway treats vnp_Amount as a two-decimal currency: 10,000 VND is
+    // sent as 1000000.
+    expect(10000 * VNPAY_AMOUNT_FACTOR).toBe(1000000);
+  });
+
+  it('formats the timestamps as yyyyMMddHHmmss in GMT+7', () => {
+    // 2023-12-07T10:00:44Z is 17:00:44 in Vietnam.
+    const formatted = formatVnTime(new Date('2023-12-07T10:00:44Z'));
+    expect(formatted).toBe('20231207170044');
+    expect(formatted).toHaveLength(14);
   });
 });
 

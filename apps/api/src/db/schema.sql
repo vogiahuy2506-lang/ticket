@@ -45,8 +45,11 @@ CREATE TABLE IF NOT EXISTS orders (
   gross_vnd         BIGINT NOT NULL,
   seller_net_vnd    BIGINT NOT NULL,
   platform_fee_vnd  BIGINT NOT NULL,
-  status            TEXT NOT NULL CHECK (status IN ('PENDING_PAYMENT', 'PAID', 'RELEASED', 'FAILED', 'CANCELLED')),
+  status            TEXT NOT NULL CHECK (status IN ('PENDING_PAYMENT', 'PAID', 'RELEASED', 'FAILED', 'CANCELLED', 'EXPIRED', 'REFUND_REQUIRED')),
   gateway           TEXT NOT NULL,
+  -- The ticket reservation is only valid for this long. When it passes
+  -- the order is EXPIRED and the tickets go back to the listing.
+  expires_at        TIMESTAMPTZ NOT NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   paid_at           TIMESTAMPTZ,
   released_at       TIMESTAMPTZ
@@ -72,6 +75,23 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 
 CREATE INDEX IF NOT EXISTS payments_order_idx ON payments(order_id);
+
+-- Every notification the gateway sent us, *including* the ones we rejected.
+--
+-- This is the reconciliation log: an operator can compare it against the
+-- gateway's own transaction list to find notifications that were lost or
+-- that arrived with a bad signature. Without it, a dropped IPN is invisible.
+CREATE TABLE IF NOT EXISTS payment_events (
+  id                BIGSERIAL PRIMARY KEY,
+  txn_ref           TEXT,
+  provider_txn_id   TEXT,
+  signature_valid   BOOLEAN NOT NULL,
+  applied           BOOLEAN NOT NULL DEFAULT false,
+  payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  received_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS payment_events_txn_ref_idx ON payment_events(txn_ref);
 
 -- Chart of accounts. user accounts are scoped to a single user via owner_user_id.
 CREATE TABLE IF NOT EXISTS ledger_accounts (
@@ -149,3 +169,34 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS orders_idempotency_uniq
   ON orders (buyer_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
+
+-- ---------------------------------------------------------------------
+-- Migration of an existing database.
+--
+-- The schema above uses CREATE TABLE IF NOT EXISTS, so a database created
+-- before a column was added would keep the old shape. These statements
+-- bring an existing database up to the current definition. They are all
+-- idempotent, so running them on a fresh database is a no-op.
+-- ---------------------------------------------------------------------
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+
+-- Existing orders have no expiry; give them one so the column is never
+-- null and the lazy expiry can compare against it.
+UPDATE orders
+   SET expires_at = created_at + interval '15 minutes'
+ WHERE expires_at IS NULL;
+
+-- The status CHECK constraint has to be replaced to allow the two new
+-- states. The old constraint is dropped by name; if it does not exist
+-- (a fresh database) the DROP is a no-op.
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
+ALTER TABLE orders
+  ADD CONSTRAINT orders_status_check
+  CHECK (status IN ('PENDING_PAYMENT', 'PAID', 'RELEASED', 'FAILED', 'CANCELLED', 'EXPIRED', 'REFUND_REQUIRED'));
+
+-- A raw notification is evidence of what the gateway said; it must not be
+-- rewritten either.
+DROP TRIGGER IF EXISTS payment_events_no_update ON payment_events;
+CREATE TRIGGER payment_events_no_update
+  BEFORE UPDATE OR DELETE ON payment_events
+  FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();

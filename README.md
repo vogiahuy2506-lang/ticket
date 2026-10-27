@@ -7,7 +7,7 @@ double-entry ledger.
 - **Storefront**: Next.js 15 (App Router, server-rendered), mobile-first
 - **Backend**: Node.js + Fastify (owns the payment webhook/IPN)
 - **Database**: PostgreSQL 16
-- **Payment**: VNPay sandbox (`sandbox.vnpay.vn`)
+- **Payment**: VNPay sandbox (`sandbox.vnpayment.vn`)
 - **Accounting**: double-entry ledger, every balance derived from the journal
 
 ---
@@ -189,15 +189,43 @@ Reasons:
    so there is no FX conversion and no rounding surprise on the gateway side.
    Stripe, for example, would charge in USD and force a conversion step
    *before* the fee split - which is exactly where money bugs hide.
-2. **A real IPN contract.** VNPay posts an `IPN` notification with a SHA256
-   signature and publishes a `vnp_ApiUrl` that the merchant can call back to
-   confirm the transaction server-to-server. That means the app *verifies*
-   the notification instead of trusting the browser redirect - which is what
-   the brief asks for.
-3. **A public sandbox.** `sandbox.vnpay.vn` accepts test cards without an
+2. **A real IPN contract.** VNPay posts an `IPN` notification with an
+   HMAC-SHA512 signature and publishes a `vnp_ApiUrl` that the merchant can
+   call back to confirm the transaction server-to-server. That means the app
+   *verifies* the notification instead of trusting the browser redirect -
+   which is what the brief asks for.
+3. **A public sandbox.** `sandbox.vnpayment.vn` accepts test cards without an
    onboarding call, so the flow can be demonstrated end to end.
 4. **Domestic relevance.** The buyer journey (VNPay app, bank cards, QR) is
    the one the end users would actually take.
+
+### The wire format, as the official samples define it
+
+The details below were taken from the current VNPay documentation
+(<https://sandbox.vnpayment.vn/apis/docs/thanh-toan-pay/pay.html>) and
+its PHP / Java / Python / C# samples. They are easy to get wrong, and
+getting them wrong means the sandbox rejects the payment or the IPN never
+verifies:
+
+| Detail | Rule |
+| --- | --- |
+| `vnp_Amount` | the VND amount **multiplied by 100** (10,000 VND is sent as `1000000`). The IPN returns the same multiplied value, so it is divided by 100 before it is compared to the order. |
+| `vnp_SecureHash` | `HMAC-SHA512(secretKey, hashData)`, lowercase hex, 128 characters. `hashData` is the alphabetically sorted (`ksort`) list of the non-empty parameters, URL-encoded, joined with `&`. The hash fields are excluded. |
+| `vnp_CreateDate`, `vnp_ExpireDate` | `yyyyMMddHHmmss` in **GMT+7**. |
+| Success | `vnp_ResponseCode == '00'` **and** `vnp_TransactionStatus == '00'`. |
+| The IPN request | a **GET** with the parameters in the query string. The reply is HTTP 200 with `{"RspCode":"00","Message":"..."}`. |
+| RspCode | `00` success, `01` order not found, `02` already confirmed, `04` invalid amount, `97` invalid signature, `99` invalid request. |
+
+The signing algorithm lives in **one** file
+(`apps/api/src/payments/vnpay-crypto.ts`) and is shared by the real
+provider, the local mock gateway and the e2e test. A second copy of the
+algorithm would let the mock and the server drift apart and hide exactly
+the bug this task is about.
+
+The local mock gateway deliberately speaks the **same** wire format -
+amount multiplied by 100, HMAC-SHA512, notification over GET - so the code
+that talks to the real sandbox is the code that talks to the mock. A mock
+with a different contract would hide bugs rather than expose them.
 
 ### Credentials
 
@@ -374,10 +402,12 @@ whether the database refused it.
 ### Order lifecycle
 
 ```
-PENDING_PAYMENT --(IPN, verified)--> PAID --(event completed)--> RELEASED
+PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEASED
         |
         +--(IPN, failed)--> FAILED
+        +--(reservation expired)--> EXPIRED
         +--(event completed before payment)--> CANCELLED
+        +--(IPN, verified, but too late)--> REFUND_REQUIRED
 ```
 
 - The **buyer's redirect back from the gateway never changes state.** The
@@ -388,7 +418,9 @@ PENDING_PAYMENT --(IPN, verified)--> PAID --(event completed)--> RELEASED
   `FOR UPDATE` before the posting, so a repeated or concurrent notification
   can never book the money twice.
 - The IPN is rejected (no ledger write) if the signature does not match, if
-  the amount differs from the order, or if the order is unknown.
+  the amount differs from the order, or if the order is unknown. The
+  rejection codes follow the official list: `97` invalid signature, `01`
+  order not found, `04` invalid amount, `02` already confirmed.
 - A *valid* notification that reports a **declined** payment is **applied**,
   not dropped: the order becomes `FAILED` and the reserved tickets go back to
   the listing. Only an invalid signature means "not trustworthy"; a declined
@@ -403,6 +435,37 @@ PENDING_PAYMENT --(IPN, verified)--> PAID --(event completed)--> RELEASED
 - When an event is completed, any order still in `PENDING_PAYMENT` is
   cancelled and its reserved tickets are returned to the listing.
 
+### Ticket reservation and the late payment
+
+A checkout reserves the tickets for **15 minutes** (`orders.expires_at`).
+When that passes, the buyer abandoned the checkout and the tickets must go
+back to the listing - otherwise one abandoned checkout permanently removes
+tickets from the market.
+
+The expiry is a **lazy sweep**: there is no cron, the sweep runs whenever
+the app touches the orders (event list, event page, new checkout, event
+completion). A lazy sweep is enough at this scale and it removes a whole
+class of "the background job silently died" bugs. A cron is listed under
+[not production ready](#7-what-is-not-production-ready).
+
+The hard case is a payment that arrives **after** the reservation expired.
+The buyer paid, but the tickets were already sold to somebody else, so:
+
+- the seller must **not** receive the money (the buyer has no ticket),
+- but the buyer did pay, so the amount is booked as
+  `Dr asset:gateway_cash / Cr liability:refund_payable`,
+- and the order becomes `REFUND_REQUIRED`.
+
+The refund itself (calling VNPay's refund API) is out of scope for this
+test task, so the money stays in `liability:refund_payable` until an
+operator refunds it. The admin dashboard shows that figure.
+
+There is a subtle case here that the e2e test covers explicitly: the lazy
+sweep may have already marked the order `EXPIRED` before the IPN arrives.
+The IPN handler therefore treats `EXPIRED` exactly like an expired
+`PENDING_PAYMENT` - it must still settle the money, never silently drop
+it.
+
 ---
 
 ## 5. Repository layout
@@ -415,6 +478,8 @@ apps/api/
   src/db/                   schema.sql, migrate, seed, accounts
   src/services/ledger.ts    double-entry posting, balances, audit
   src/services/orders.ts    order lifecycle, IPN handling, escrow release
+  src/services/admin.ts     the operations dashboard aggregates
+  src/payments/vnpay-crypto.ts  the VNPay signing algorithm (one shared copy)
   src/payments/vnpay.ts     VNPay sandbox adapter (sign / verify)
   src/payments/mock.ts      local gateway simulator
   src/routes/               HTTP API + the mock payment page
@@ -426,6 +491,7 @@ apps/web/
   src/app/orders/[id]/      payment result page (SSR + status poller)
   src/app/wallet/           pending / available balances
   src/app/ledger/           the journal and all account balances
+  src/app/admin/            the operations dashboard (admin only)
   src/app/actions.ts        server actions: checkout, switch user, complete event
 scripts/
   dev.sh                    starts the stack, freeing the ports it needs first
@@ -512,6 +578,29 @@ scripts/
     "complete event" button is hidden for non-admins, and the server action
     re-checks the role. A Next.js server action is an HTTP endpoint, so
     hiding the button is not authorization.
+21. **The ticket reservation lasts 15 minutes** and is released lazily
+    (no cron). An abandoned checkout would otherwise remove tickets from the
+    market forever.
+22. **A payment that arrives after the reservation expires is
+    `REFUND_REQUIRED`, not `PAID`.** The buyer paid, so the money has to be
+    accounted for - but the tickets are gone, so the seller must not get it.
+    It is booked as `liability:refund_payable` until an operator refunds
+    it. Dropping the notification would lose the buyer's money; paying the
+    seller would be worse.
+23. **A seller cannot buy their own listing** (`409 OWN_LISTING`). The money
+    would move from the seller to the seller, the platform fee would be
+    invented, and the escrow would be nonsense.
+24. **Every raw gateway notification is logged** in `payment_events`,
+    including the ones we reject. It is the reconciliation log: an operator
+    compares it against the gateway's own transaction list to find
+    notifications that never arrived. The `payments` table only holds the
+    notifications that were applied.
+25. **The admin role gets an operations dashboard** (`/admin`): the money
+    currently held in escrow, the orders stuck waiting for a gateway, the
+    events waiting for a release, the escrow per seller, all orders, and the
+    raw IPN log. Every number is derived from the ledger, and the e2e test
+    asserts that the dashboard agrees with the journal - the dashboard can
+    never become a second source of truth.
 
 ---
 
@@ -534,7 +623,9 @@ Honest list:
   webhook.
 - **No refunds.** The `REFUNDED` payment status exists in the schema but no
   flow produces it. A refund would need a reverse posting and a rule for
-  who eats the gateway fee.
+  who eats the gateway fee. The late-payment path books the liability
+  (`liability:refund_payable`) but an operator still has to call the
+  gateway's refund API and post the reversing entry by hand.
 - **No real payouts.** Releasing escrow only moves money between the
   platform's own liability accounts. There is no bank transfer, no KYC, no
   payout batching, and no reconciliation with the gateway's settlement file.
@@ -547,7 +638,12 @@ Honest list:
   user).
 - **No observability**: no structured logging pipeline, no metrics, no
   alerting on IPN failures, no dead-letter queue for notifications that
-  could not be applied.
+  could not be applied. The `payment_events` table is the first building
+  block for the dead-letter queue, but nothing consumes it yet.
+- **The reservation expiry is a lazy sweep, not a cron.** It runs when the
+  app touches the orders. With no traffic, an abandoned reservation stays
+  "reserved" in the database until the next request - harmless here, but a
+  real deployment needs a scheduled job.
 - **Prices and quantities are trusted from the client** for the quantity
   only; the price is read from the database, but there is no per-user price
   or promotion engine.
@@ -640,6 +736,27 @@ Desktop's disk was full, so ports had to be made configurable).
   applied, `ok` only says whether the payment succeeded. A declined payment
   is now applied (order `FAILED`, ticket returned); only a bad signature is
   dropped. The e2e script asserts this path.
+- A later pass compared the implementation against the **current** VNPay
+  documentation and found three real bugs that would have made the sandbox
+  integration fail on the first try:
+  - `vnp_Amount` was sent as the raw VND amount. The gateway expects it
+    **multiplied by 100**, so a 2,640,000 VND order was sent as `2640000`
+    instead of `264000000` - a 100x underpayment, or a rejection.
+  - the signature used `sha256(secret + query + secret)`. The real algorithm
+    is `HMAC-SHA512(secret, hashData)` over the sorted, URL-encoded
+    parameters - so **every** IPN would have been rejected as an invalid
+    signature.
+  - the IPN endpoint only accepted `POST`, but VNPay notifies with a `GET`.
+  Fixed against the official PHP / Java / Python / C# samples. The signing
+  algorithm was then moved into a single shared module used by the real
+  provider, the mock gateway and the test - having a second copy in the
+  mock is exactly how the two would have drifted apart and hidden the bug.
+- The lazy expiry sweep introduced its own bug, which the new e2e assertion
+  caught immediately: the sweep marked an abandoned order `EXPIRED`, and the
+  IPN handler only looked at `PENDING_PAYMENT`, so a payment that arrived
+  after the sweep was **silently dropped** - the buyer's money would have
+  disappeared. Fixed by treating `EXPIRED` as a late payment that still has
+  to be settled as `REFUND_REQUIRED`.
 
 ---
 
@@ -672,3 +789,12 @@ be run as often as you like:
 11. assert checkout for the now-completed event is rejected with `409`
 12. post a signed IPN that reports a *declined* payment -> the order becomes
     `FAILED` and the reserved ticket is returned to the listing
+13. a seller cannot buy their own listing -> `409`
+14. the lazy sweep expires an abandoned reservation -> the order becomes
+    `EXPIRED` and the ticket goes back to the listing
+15. an IPN that arrives *after* the sweep -> the order becomes
+    `REFUND_REQUIRED`, the money is booked as `liability:refund_payable`
+    (not as seller escrow), and the ledger stays balanced
+16. the admin dashboard agrees with the journal, number for number
+17. every raw notification is logged in `payment_events`, including a
+    rejected one (bad signature -> `RspCode 97`, and it is still logged)

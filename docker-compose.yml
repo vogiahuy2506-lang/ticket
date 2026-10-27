@@ -32,7 +32,7 @@ services:
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
       MOCK_GATEWAY: ${MOCK_GATEWAY:-true}
       MOCK_GATEWAY_SECRET: ${MOCK_GATEWAY_SECRET:-mock-secret-local-dev}
-      VNPAY_URL: ${VNPAY_URL:-https://sandbox.vnpay.vn}
+      VNPAY_URL: ${VNPAY_URL:-https://sandbox.vnpayment.vn/paymentv2/vpcpay.html}
       VNPAY_MERCHANT_CODE: ${VNPAY_MERCHANT_CODE:-}
       VNPAY_SECRET_KEY: ${VNPAY_SECRET_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}

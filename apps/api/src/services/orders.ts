@@ -1,16 +1,22 @@
 import type { Db } from '../db/types.js';
 import { withTx } from '../db/types.js';
 import { computeFees } from '@tce/shared';
-import { ensureUserAccounts, getAccountByCode } from '../db/accounts.js';
-import { postEscrowRelease, postPaymentCapture } from './ledger.js';
+import { ensurePlatformAccounts, ensureUserAccounts, getAccountByCode } from '../db/accounts.js';
+import { postEscrowRelease, postLatePaymentRefund, postPaymentCapture } from './ledger.js';
 
 /**
  * Order lifecycle and money movement.
  *
  *   PENDING_PAYMENT --(IPN success)--> PAID  (money captured, seller money escrowed)
  *   PAID            --(event completed)--> RELEASED (escrow -> seller available)
- *   PENDING_PAYMENT --(IPN failure / timeout)--> FAILED | CANCELLED
+ *   PENDING_PAYMENT --(IPN failure)--> FAILED (tickets go back to the listing)
+ *   PENDING_PAYMENT --(reservation expires)--> EXPIRED (tickets go back)
+ *   PENDING_PAYMENT --(IPN success, but the reservation had expired)-->
+ *     REFUND_REQUIRED (the buyer paid but the seller no longer gets the money;
+ *     the amount is booked as owed to the buyer, not as seller escrow)
  */
+
+export const ORDER_RESERVATION_MINUTES = 15;
 
 export interface OrderRow {
   id: string;
@@ -30,6 +36,7 @@ export interface OrderRow {
   gateway: string;
   idempotency_key: string | null;
   created_at: string;
+  expires_at: string;
   paid_at: string | null;
   released_at: string | null;
 }
@@ -74,6 +81,10 @@ export async function createOrder(
     throw new OrderError('So luong khong hop le', 'INVALID_QUANTITY');
   }
 
+  // Lazy sweep: free the tickets of abandoned checkouts before we take the
+  // row lock, so a buyer does not see "sold out" because of a dead order.
+  await expireStaleOrders(sql);
+
   return await withTx(sql, async (tx) => {
     // Idempotency: a double-tapped "Pay" button sends the same key twice.
     // Return the original order instead of reserving a second batch of
@@ -115,6 +126,17 @@ export async function createOrder(
       );
     }
 
+    // A seller cannot buy their own listing: the money would move from the
+    // seller to the seller, the platform fee would be invented, and the
+    // escrow would be nonsense.
+    if (listing.seller_id === args.buyerId) {
+      throw new OrderError(
+        'Ban khong the mua ve cua chinh minh',
+        'OWN_LISTING',
+        409,
+      );
+    }
+
     const remaining = listing.quantity_total - listing.quantity_sold;
     if (remaining < args.quantity) {
       throw new OrderError(
@@ -131,13 +153,14 @@ export async function createOrder(
         buyer_id, listing_id, event_id, seller_id, quantity,
         unit_price_vnd, subtotal_vnd, buyer_fee_vnd, seller_fee_vnd,
         gross_vnd, seller_net_vnd, platform_fee_vnd, status, gateway,
-        idempotency_key
+        idempotency_key, expires_at
       )
       VALUES (
         ${args.buyerId}, ${listing.id}, ${listing.event_id}, ${listing.seller_id}, ${args.quantity},
         ${listing.price_vnd}, ${fees.subtotalVnd}, ${fees.buyerFeeVnd}, ${fees.sellerFeeVnd},
         ${fees.grossVnd}, ${fees.sellerNetVnd}, ${fees.platformFeeVnd},
-        'PENDING_PAYMENT', 'vnpay', ${args.idempotencyKey ?? null}
+        'PENDING_PAYMENT', 'vnpay', ${args.idempotencyKey ?? null},
+        now() + (${ORDER_RESERVATION_MINUTES} * interval '1 minute')
       )
       RETURNING *
     `;
@@ -150,6 +173,45 @@ export async function createOrder(
     `;
 
     return order;
+  });
+}
+
+/**
+ * Releases the ticket reservations of orders that were never paid for.
+ *
+ * Decision (brief was silent): the reservation is held for 15 minutes. When
+ * that passes, the buyer has abandoned the checkout and the tickets must go
+ * back to the listing - otherwise one abandoned checkout permanently removes
+ * tickets from the market.
+ *
+ * The expiry is processed *lazily*: there is no cron, the sweep runs when
+ * the app touches the orders (listing page, checkout, new order, event
+ * completion). A lazy sweep is enough for a marketplace of this size and it
+ * removes a whole class of "the background job silently died" bugs. A cron
+ * is listed in the README under "not production ready".
+ *
+ * The sweep is idempotent: only PENDING_PAYMENT orders that are past their
+ * expiry are touched, and the ticket count is returned exactly once.
+ */
+export async function expireStaleOrders(sql: Db): Promise<{ expired: number }> {
+  return await withTx(sql, async (tx) => {
+    const expired = await tx<{ id: string; listing_id: string; quantity: number }[]>`
+      UPDATE orders
+         SET status = 'EXPIRED'
+       WHERE status = 'PENDING_PAYMENT'
+         AND expires_at < now()
+      RETURNING id, listing_id, quantity
+    `;
+
+    for (const order of expired) {
+      await tx`
+        UPDATE listings
+           SET quantity_sold = quantity_sold - ${order.quantity}
+         WHERE id = ${order.listing_id}
+      `;
+    }
+
+    return { expired: expired.length };
   });
 }
 
@@ -215,13 +277,45 @@ export async function handleIpn(
       return { status: refreshed[0]!.status, applied: isNewNotification, order: refreshed[0]! };
     }
 
-    if (order.status === 'PENDING_PAYMENT') {
+    // The money arrived. The order may still be PENDING_PAYMENT, or it may
+    // already have been marked EXPIRED by the lazy sweep - in that case the
+    // tickets were given back and sold to somebody else, so the buyer has to
+    // be refunded instead of the seller being paid.
+    if (order.status === 'PENDING_PAYMENT' || order.status === 'EXPIRED') {
       if (Number(order.gross_vnd) !== args.amountVnd) {
         throw new OrderError(
           `So tien khong khop: order ${order.gross_vnd} vs IPN ${args.amountVnd}`,
           'AMOUNT_MISMATCH',
           400,
         );
+      }
+
+      // The reservation had already expired - the tickets were sold to
+      // somebody else in the meantime. The seller must not get this money
+      // (the buyer no longer has a ticket), but the buyer did pay, so the
+      // amount is booked as a liability towards them and refunded out of
+      // band. This is the "late payment" case.
+      const isLate =
+        order.status === 'EXPIRED' ||
+        new Date(order.expires_at).getTime() < Date.now();
+      if (isLate) {
+        await ensurePlatformAccounts(tx);
+        await postLatePaymentRefund(tx, {
+          orderId: order.id,
+          amountVnd: Number(order.gross_vnd),
+          memo: `Thanh toan den muon don hang ${order.id}`,
+        });
+        await tx`
+          UPDATE orders
+          SET status = 'REFUND_REQUIRED', paid_at = now()
+          WHERE id = ${args.orderId}
+        `;
+        const late = await tx<OrderRow[]>`SELECT * FROM orders WHERE id = ${args.orderId}`;
+        return {
+          status: late[0]!.status,
+          applied: isNewNotification,
+          order: late[0]!,
+        };
       }
 
       const sellerId = order.seller_id;
@@ -271,6 +365,10 @@ export async function releaseEventEscrow(
   sql: Db,
   args: { eventId: string },
 ): Promise<{ released: number; releasedVnd: number; cancelled: number; orderIds: string[] }> {
+  // Free the tickets of abandoned checkouts first, so they are not
+  // double-returned below.
+  await expireStaleOrders(sql);
+
   return await withTx(sql, async (tx) => {
     const orders = await tx<OrderRow[]>`
       SELECT * FROM orders

@@ -126,6 +126,68 @@ export const api = {
         }>;
       }>;
     }>(`/api/wallet/${userId}`),
+
+  adminOverview: () =>
+    apiFetch<{
+      escrowHeldVnd: number;
+      releasedVnd: number;
+      gatewayCashVnd: number;
+      platformFeeVnd: number;
+      refundPayableVnd: number;
+      grossVolumeVnd: number;
+      orderCounts: Record<string, number>;
+      pendingOrderCount: number;
+      stuckOrders: Array<{
+        orderId: string;
+        eventName: string;
+        buyerName: string;
+        grossVnd: number;
+        ageMinutes: number;
+      }>;
+      eventsAwaitingRelease: Array<{
+        eventId: string;
+        eventName: string;
+        startsAt: string;
+        paidOrders: number;
+        escrowVnd: number;
+      }>;
+      sellerEscrows: Array<{
+        userId: string;
+        name: string;
+        pendingVnd: number;
+        availableVnd: number;
+      }>;
+    }>('/api/admin/overview'),
+
+  adminOrders: () =>
+    apiFetch<{
+      orders: Array<{
+        id: string;
+        status: string;
+        eventName: string;
+        buyerName: string;
+        sellerName: string;
+        quantity: number;
+        grossVnd: number;
+        sellerNetVnd: number;
+        platformFeeVnd: number;
+        createdAt: string;
+        paidAt: string | null;
+        releasedAt: string | null;
+      }>;
+    }>('/api/admin/orders'),
+
+  adminPaymentEvents: () =>
+    apiFetch<{
+      events: Array<{
+        txn_ref: string | null;
+        provider_txn_id: string | null;
+        signature_valid: boolean;
+        applied: boolean;
+        payload: Record<string, string>;
+        received_at: string;
+      }>;
+    }>('/api/admin/payment-events'),
 };
 
 export const API_BASE = API_BASE_URL;

@@ -19,8 +19,20 @@
  */
 
 import crypto from 'node:crypto';
+import { getSql } from '../src/db/client.js';
+import { signVnParams } from '../src/payments/vnpay-crypto.js';
 
 const SECRET = process.env.MOCK_GATEWAY_SECRET ?? 'mock-secret-local-dev';
+
+/**
+ * Direct database access.
+ *
+ * The assertions normally go through the HTTP API, but a few of them have
+ * to put the database into a state that cannot be reached from outside -
+ * for example an order whose reservation has expired. Writing that state
+ * directly is the honest way to test it.
+ */
+const sql = getSql();
 
 /** The API base URL. Set by the runner before the assertions start. */
 let API = process.env.API_BASE_URL ?? 'http://localhost:3001';
@@ -46,22 +58,21 @@ export function getFixture(): { eventId: string; listingId: string } | null {
   return FIXTURE;
 }
 
+/**
+ * The exact signing algorithm of the gateway: HMAC-SHA512 over the
+ * alphabetically sorted, URL-encoded `key=value` list.
+ *
+ * The test signs its own IPN payloads instead of asking the API to sign
+ * them, so it proves the server verifies a signature it did not produce.
+ */
 function sign(params: Record<string, string>): string {
-  const filtered = Object.keys(params)
-    .sort()
-    .reduce<Record<string, string>>((acc, key) => {
-      const v = params[key];
-      if (v !== undefined && v !== null && v !== '') acc[key] = String(v);
-      return acc;
-    }, {});
-  const query = Object.entries(filtered)
-    .map(([k, v]) => `${k}=${v}`)
-    .join('&');
-  return crypto
-    .createHash('sha256')
-    .update(`${SECRET}${query}${SECRET}`, 'utf8')
-    .digest('hex');
+  return signVnParams(params, SECRET);
 }
+
+/**
+ * The gateway multiplies every amount by 100 on the wire.
+ */
+const WIRE_AMOUNT_FACTOR = 100;
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
@@ -193,28 +204,32 @@ export async function runAssertions(): Promise<void> {
   const cashBefore = beforeByCode.get('asset:gateway_cash') ?? 0;
 
   // ------------------------------------------------------------------ IPN
+  // The payload follows the real wire format: the amount is multiplied by
+  // 100, a successful payment has both the response code and the transaction
+  // status set to '00', and the notification arrives as a GET request.
   const payload: Record<string, string> = {
-    vnp_Version: '2.1',
+    vnp_Version: '2.1.0',
     vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
     vnp_OrderType: 'other',
-    vnp_Amount: String(expectedGross),
-    vnp_Currency: 'VND',
+    vnp_Amount: String(expectedGross * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
     vnp_TxnRef: orderId,
     vnp_OrderInfo: `Thanh toan don hang ${orderId.slice(0, 8)}`,
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
     vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
-    vnp_TransactionId: `E2E${Date.now()}`,
+    vnp_TransactionNo: `E2E${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '00',
+    vnp_TransactionStatus: '00',
     vnp_ResponseMessage: 'Giao dich thanh cong',
   };
   payload.vnp_SecureHash = sign(payload);
 
-  const ipnRes = await fetch(`${API}/api/ipn/vnpay`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(payload).toString(),
-  });
+  const ipnRes = await fetch(
+    `${API}/api/ipn/vnpay?${new URLSearchParams(payload).toString()}`,
+    { method: 'GET' },
+  );
   const ipnBody = (await ipnRes.json()) as { RspCode: string };
   assert(ipnBody.RspCode === '00', 'IPN accepted (RspCode 00)');
 
@@ -223,10 +238,8 @@ export async function runAssertions(): Promise<void> {
 
   // ------------------------------------------------- idempotent replay x3
   for (let i = 0; i < 3; i++) {
-    await fetch(`${API}/api/ipn/vnpay`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(payload).toString(),
+    await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(payload).toString()}`, {
+      method: 'GET',
     });
   }
   console.log('  ... replayed the same IPN 3 times');
@@ -295,27 +308,28 @@ export async function runAssertions(): Promise<void> {
   const declineOrderId = declineCheckout.orderId;
 
   const declinedPayload: Record<string, string> = {
-    vnp_Version: '2.1',
+    vnp_Version: '2.1.0',
     vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
     vnp_OrderType: 'other',
-    vnp_Amount: String(declineCheckout.grossVnd),
-    vnp_Currency: 'VND',
+    vnp_Amount: String(declineCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
     vnp_TxnRef: declineOrderId,
     vnp_OrderInfo: `Thanh toan don hang ${declineOrderId.slice(0, 8)}`,
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
     vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
-    vnp_TransactionId: `E2EFAIL${Date.now()}`,
+    vnp_TransactionNo: `E2EFAIL${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '99',
+    vnp_TransactionStatus: '99',
     vnp_ResponseMessage: 'Giao dich bi huy',
   };
   declinedPayload.vnp_SecureHash = sign(declinedPayload);
 
-  const declineRes = await fetch(`${API}/api/ipn/vnpay`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(declinedPayload).toString(),
-  });
+  const declineRes = await fetch(
+    `${API}/api/ipn/vnpay?${new URLSearchParams(declinedPayload).toString()}`,
+    { method: 'GET' },
+  );
   const declineBody = (await declineRes.json()) as { RspCode: string };
   assert(
     declineBody.RspCode === '00',
@@ -339,6 +353,98 @@ export async function runAssertions(): Promise<void> {
     soldAfterDecline === soldBeforeDecline,
     'a declined payment returns the reserved ticket to the listing',
   );
+
+  // ----------------------------------------------------- own listing
+  // A seller must not be able to buy their own ticket. This runs while the
+  // event is still scheduled, so the rejection really is about the listing
+  // and not about the event being closed.
+  const sellerOwnCheckout = await fetch(`${API}/api/checkout`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      listingId: listing.id,
+      quantity: 1,
+      buyerId: seller.id,
+    }),
+  });
+  assert(
+    sellerOwnCheckout.status === 409,
+    'a seller cannot buy their own listing (409)',
+  );
+
+  // ------------------------------------------------- late payment / refund
+  // The buyer paid, but the ticket reservation had already expired and the
+  // tickets were sold to somebody else. The seller must not get the money,
+  // but the buyer did pay - so the amount becomes a liability towards them.
+  //
+  // This has to happen while the event is still scheduled: a completed event
+  // refuses new checkouts.
+  const lateCheckout = await json<{ orderId: string; grossVnd: number }>('/api/checkout', {
+    method: 'POST',
+    headers: { 'idempotency-key': `e2e-late-${Date.now()}` },
+    body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+  });
+
+  // Force the reservation to expire.
+  await sql`
+    UPDATE orders SET expires_at = now() - interval '1 minute'
+    WHERE id = ${lateCheckout.orderId}
+  `;
+
+  // The lazy sweep marks the order EXPIRED and gives the tickets back.
+  // A payment that arrives *after* that sweep must still be handled - the
+  // buyer paid, so the money must not disappear.
+  await json<{ expired: number }>('/api/events');
+  const swept = await json<{ order: { status: string } }>(
+    `/api/orders/${lateCheckout.orderId}`,
+  );
+  assert(
+    swept.order.status === 'EXPIRED',
+    'the lazy sweep expires the abandoned reservation',
+  );
+
+  const latePayload: Record<string, string> = {
+    vnp_Version: '2.1.0',
+    vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_OrderType: 'other',
+    vnp_Amount: String(lateCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
+    vnp_TxnRef: lateCheckout.orderId,
+    vnp_OrderInfo: 'Thanh toan don hang muon',
+    vnp_ReturnUrl: 'http://localhost:3010/orders/x',
+    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
+    vnp_TransactionNo: `E2ELATE${Date.now()}`,
+    vnp_BankCode: 'NCB',
+    vnp_ResponseCode: '00',
+    vnp_TransactionStatus: '00',
+    vnp_ResponseMessage: 'Giao dich thanh cong',
+  };
+  latePayload.vnp_SecureHash = sign(latePayload);
+
+  await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(latePayload).toString()}`, {
+    method: 'GET',
+  });
+
+  const lateOrder = await json<{ order: { status: string } }>(
+    `/api/orders/${lateCheckout.orderId}`,
+  );
+  assert(
+    lateOrder.order.status === 'REFUND_REQUIRED',
+    'a payment that arrives after the reservation expired becomes REFUND_REQUIRED',
+  );
+
+  const { balances: lateBalances } = await json<{
+    balances: Array<{ accountCode: string; balanceVnd: number }>;
+  }>('/api/ledger/balances');
+  const lateByCode = new Map(lateBalances.map((b) => [b.accountCode, b.balanceVnd]));
+  assert(
+    (lateByCode.get('liability:refund_payable') ?? 0) >= lateCheckout.grossVnd,
+    'the late payment is booked as money owed to the buyer (refund payable)',
+  );
+
+  const lateAudit = await json<{ ok: boolean }>('/api/ledger/audit');
+  assert(lateAudit.ok, 'the ledger is still balanced after the late payment');
 
   // ------------------------------------------------- escrow release
   const released = await json<{ released: number; releasedVnd: number }>(
@@ -369,6 +475,55 @@ export async function runAssertions(): Promise<void> {
   const audit2 = await json<{ ok: boolean }>('/api/ledger/audit');
   assert(audit2.ok, 'ledger is still balanced after the release');
 
+  // ------------------------------------------------ the admin dashboard
+  // The ops dashboard must not be a second source of truth: every number it
+  // shows has to match the ledger exactly.
+  const admin = await json<{
+    escrowHeldVnd: number;
+    releasedVnd: number;
+    gatewayCashVnd: number;
+    platformFeeVnd: number;
+    pendingOrderCount: number;
+    orderCounts: Record<string, number>;
+    sellerEscrows: Array<{ userId: string; pendingVnd: number; availableVnd: number }>;
+  }>('/api/admin/overview');
+
+  const ledgerPendingTotal = after.balances
+    .filter((b) => b.accountCode.endsWith(':pending'))
+    .reduce((s, b) => s + b.balanceVnd, 0);
+  const ledgerAvailableTotal = after.balances
+    .filter((b) => b.accountCode.endsWith(':available'))
+    .reduce((s, b) => s + b.balanceVnd, 0);
+
+  assert(
+    admin.escrowHeldVnd === ledgerPendingTotal,
+    'admin dashboard escrow total matches the ledger',
+  );
+  assert(
+    admin.releasedVnd === ledgerAvailableTotal,
+    'admin dashboard released total matches the ledger',
+  );
+  assert(
+    admin.gatewayCashVnd === (afterByCode.get('asset:gateway_cash') ?? 0),
+    'admin dashboard gateway cash matches the ledger',
+  );
+  assert(
+    admin.platformFeeVnd === (afterByCode.get('revenue:platform_fee') ?? 0),
+    'admin dashboard platform fee matches the ledger',
+  );
+
+  const sellerEscrow = admin.sellerEscrows.find((s) => s.userId === seller.id);
+  assert(
+    sellerEscrow?.pendingVnd === pendingAfter &&
+      sellerEscrow?.availableVnd === availableAfter,
+    'admin per-seller escrow matches that seller balances',
+  );
+  assert(
+    admin.orderCounts['RELEASED'] !== undefined &&
+      admin.orderCounts['RELEASED'] >= 1,
+    'admin dashboard counts the released orders',
+  );
+
   // ------------------------------------- the journal cannot be rewritten
   // The ledger is append-only at the database level: an UPDATE or DELETE on
   // a posted entry is rejected by a trigger.
@@ -397,6 +552,48 @@ export async function runAssertions(): Promise<void> {
   assert(
     closedCheckout.status === 409,
     'checkout for a completed event is rejected (409)',
+  );
+
+  // ------------------------------------------------- the raw IPN log
+  // Every notification is logged, including the ones we rejected, so an
+  // operator can reconcile against the gateway's own transaction list.
+  const { events: rawEvents } = await json<{
+    events: Array<{
+      txn_ref: string | null;
+      signature_valid: boolean;
+      applied: boolean;
+      payload: Record<string, string>;
+    }>;
+  }>('/api/admin/payment-events');
+
+  const loggedForOrder = rawEvents.filter((e) => e.txn_ref === orderId);
+  assert(
+    loggedForOrder.length >= 1,
+    'the raw IPN was written to the reconciliation log',
+  );
+  assert(
+    loggedForOrder.some((e) => e.applied),
+    'the reconciliation log records that the IPN was applied',
+  );
+
+  const badSignature = await fetch(
+    `${API}/api/ipn/vnpay?${new URLSearchParams({
+      ...payload,
+      vnp_TxnRef: 'does-not-exist',
+      vnp_SecureHash: '0'.repeat(128),
+    }).toString()}`,
+    { method: 'GET' },
+  );
+  const badBody = (await badSignature.json()) as { RspCode: string };
+  assert(badBody.RspCode === '97', 'an IPN with a bad signature is rejected (RspCode 97)');
+
+  const { events: afterBad } = await json<{
+    events: Array<{ signature_valid: boolean; applied: boolean }>;
+  }>('/api/admin/payment-events');
+  assert(
+    afterBad.length > rawEvents.length &&
+      afterBad.some((e) => !e.signature_valid && !e.applied),
+    'the rejected IPN is logged too (signature_valid=false, applied=false)',
   );
 
   console.log('\nAll E2E assertions passed.');
