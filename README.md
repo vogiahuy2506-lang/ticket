@@ -459,14 +459,13 @@ Honest list:
 
 ### Pushing it to GitHub
 
-The repository ships a helper that creates the remote and pushes:
+The repository ships a helper that creates the remote (if needed) and pushes:
 
 ```bash
-gh auth login          # once
 ./scripts/push-to-github.sh
 ```
 
-It defaults to `syn-mcj/ticket-checkout-escrow`; override with
+It defaults to `vogiahuy2506-lang/ticket`; override with
 `REMOTE_REPO=owner/name ./scripts/push-to-github.sh`.
 
 ### What I would do next, in order

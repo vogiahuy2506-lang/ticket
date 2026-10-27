@@ -12,14 +12,24 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REMOTE_REPO="${REMOTE_REPO:-syn-mcj/ticket-checkout-escrow}"
+REMOTE_REPO="${REMOTE_REPO:-vogiahuy2506-lang/ticket}"
 
 cd "$REPO_DIR"
 
 echo "==> Checking GitHub authentication"
-if ! gh auth status >/dev/null 2>&1; then
+echo "==> Checking GitHub authentication"
+
+# The repository may already exist and the machine may already have
+# credentials (a PAT in the keychain, for example), so the check is: can we
+# actually talk to the remote? Only if that fails do we need `gh`.
+have_gh=false
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  have_gh=true
+fi
+if ! git ls-remote "https://github.com/$REMOTE_REPO.git" >/dev/null 2>&1 && [ "$have_gh" = false ]; then
   echo ""
-  echo "GitHub CLI is not logged in yet. Choose one:"
+  echo "Cannot reach $REMOTE_REPO and the GitHub CLI is not logged in."
+  echo "Choose one:"
   echo ""
   echo "  (a) Log in with the GitHub CLI (interactive):"
   echo "        gh auth login"
@@ -34,21 +44,29 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Creating the remote repository: $REMOTE_REPO"
-if gh repo view "$REMOTE_REPO" >/dev/null 2>&1; then
+echo "==> Checking the remote repository: $REMOTE_REPO"
+if git ls-remote "https://github.com/$REMOTE_REPO.git" >/dev/null 2>&1; then
   echo "    already exists, reusing it"
-else
+elif [ "$have_gh" = true ]; then
   gh repo create "$REMOTE_REPO" --private --description \
     "Resale marketplace thin slice: ticket checkout with escrow and a double-entry ledger" \
     || gh repo create "$REMOTE_REPO" --public --description \
       "Resale marketplace thin slice: ticket checkout with escrow and a double-entry ledger"
+else
+  echo "    does not exist and gh is not available - create it by hand:"
+  echo "        https://github.com/new?name=$REMOTE_REPO"
+  exit 1
 fi
 
 echo "==> Adding the remote"
-if git remote get-url origin >/dev/null 2>&1; then
-  git remote set-url origin "https://github.com/$REMOTE_REPO.git"
-else
-  git remote add origin "https://github.com/$REMOTE_REPO.git"
+REMOTE_URL="https://github.com/$REMOTE_REPO.git"
+current_url="$(git remote get-url origin 2>/dev/null || true)"
+if [ "$current_url" != "$REMOTE_URL" ]; then
+  if [ -n "$current_url" ]; then
+    git remote set-url origin "$REMOTE_URL"
+  else
+    git remote add origin "$REMOTE_URL"
+  fi
 fi
 
 echo "==> Pushing main"
