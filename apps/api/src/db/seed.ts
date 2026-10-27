@@ -68,6 +68,7 @@ export async function seed(): Promise<void> {
       (${concert!.id}, ${seller1.id}, 'Vé VIP - khu vuc A', 20, 1500000),
       (${concert!.id}, ${seller1.id}, 'Vé Standard - khu vuc B', 50, 900000),
       (${concert!.id}, ${seller2.id}, 'Vé Vé vòng 2', 30, 1200000),
+      (${concert!.id}, ${seller2.id}, 'Vé góc - gia lẻ (test lam tron)', 15, 333333),
       (${conference!.id}, ${seller2.id}, 'Vé phim khu vuc B', 40, 750000),
       (${conference!.id}, ${seller1.id}, 'Vé VIP khu vuc A', 10, 2000000)
   `;

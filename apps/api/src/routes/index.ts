@@ -15,6 +15,7 @@ import {
   listTransactions,
 } from '../services/ledger.js';
 import { registerMockGatewayRoutes } from './mock-gateway.js';
+import { withTx } from '../db/types.js';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   const deps = app as unknown as AppDeps;
@@ -73,8 +74,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'BUYER_REQUIRED' });
     }
 
+    // Optional Idempotency-Key. The storefront sends a key per checkout
+    // attempt, so a double-tapped "Pay" button returns the original order
+    // instead of reserving a second batch of tickets.
+    const idempotencyKey =
+      typeof req.headers['idempotency-key'] === 'string'
+        ? req.headers['idempotency-key'].slice(0, 100)
+        : null;
+
     try {
-      const order = await createOrder(sql, { buyerId: body.buyerId, listingId, quantity });
+      const order = await createOrder(sql, {
+        buyerId: body.buyerId,
+        listingId,
+        quantity,
+        idempotencyKey,
+      });
       const provider = providerFor(deps);
       const payment = await provider.createPayment({
         orderId: order.id,
@@ -184,6 +198,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --------------------------------------------------------------- escrow
+  /**
+   * Marks an event as completed: releases every escrowed seller balance and
+   * cancels the orders that were never paid for.
+   *
+   * Note (brief was silent): the brief says "No authentication needed for
+   * this test task", so there is no auth on this endpoint. The *web* layer
+   * gates the button on the admin role, but the API itself is open - that is
+   * listed in the README under "not production ready".
+   */
   app.post<{ Params: { id: string } }>('/api/events/:id/complete', async (req) => {
     return await releaseEventEscrow(sql, { eventId: req.params.id });
   });
@@ -209,6 +232,64 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/ledger/audit', async () => {
     return await auditLedger(sql);
+  });
+
+  /**
+   * Proves the journal is append-only at the *database* level.
+   *
+   * It tries to UPDATE and DELETE one posted entry inside a transaction and
+   * rolls back, so nothing is actually modified. If the trigger is in place
+   * the database refuses both statements.
+   *
+   * This backs the claim in the README that a posted ledger entry cannot be
+   * edited or deleted - not just "we never call UPDATE on it".
+   */
+  app.get('/api/ledger/integrity', async () => {
+    const entry = await sql<{ id: string }[]>`
+      SELECT id FROM ledger_entries ORDER BY created_at DESC, id DESC LIMIT 1
+    `;
+    if (!entry[0]) {
+      return { appendOnly: true, checked: false, reason: 'journal is empty' };
+    }
+
+    const ROLLBACK_PROBE = 'integrity-probe-rollback';
+
+    /**
+     * Runs the statement and then forces a rollback by throwing. If the
+     * trigger rejected the statement, the error we see is the trigger's;
+     * if the statement went through, we see our own probe marker.
+     */
+    const attempt = async (statement: 'update' | 'delete') => {
+      try {
+        await withTx(sql, async (tx) => {
+          if (statement === 'update') {
+            await tx`UPDATE ledger_entries SET amount_vnd = amount_vnd + 1 WHERE id = ${entry[0]!.id}`;
+          } else {
+            await tx`DELETE FROM ledger_entries WHERE id = ${entry[0]!.id}`;
+          }
+          throw new Error(ROLLBACK_PROBE);
+        });
+        return { rejected: false, error: null };
+      } catch (err) {
+        const message = (err as Error).message ?? '';
+        if (message === ROLLBACK_PROBE) {
+          // the statement was allowed - it was rolled back by the probe
+          return { rejected: false, error: 'statement was allowed (rolled back)' };
+        }
+        return { rejected: true, error: message };
+      }
+    };
+
+    const upd = await attempt('update');
+    const del = await attempt('delete');
+
+    return {
+      appendOnly: upd.rejected && del.rejected,
+      checked: true,
+      updateRejected: upd.rejected,
+      deleteRejected: del.rejected,
+      detail: upd.error ?? del.error,
+    };
   });
 
   await registerMockGatewayRoutes(app);

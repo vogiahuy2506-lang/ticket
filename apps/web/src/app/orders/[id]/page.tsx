@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import { api } from '@/lib/api';
 import { formatVnd } from '@tce/shared';
 import OrderStatusPoller from './OrderStatusPoller';
+import { Badge, MoneyRow, PageHeader, SectionTitle } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,56 +23,86 @@ export default async function OrderPage({
   const { order, fees, payments } = data;
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-bold">Ket qua thanh toan</h1>
+    <div className="space-y-5">
+      <PageHeader
+        title="Ket qua thanh toan"
+        subtitle={`Ma don: ${order.id}`}
+      />
+
+      <section className="card">
+        <OrderStatusPoller orderId={order.id} initialStatus={order.status} />
+      </section>
+
+      <section className="card space-y-1">
+        <SectionTitle title="Chi tiet tien" />
+        <MoneyRow
+          label={`Gia ve x ${order.quantity}`}
+          value={formatVnd(fees.subtotalVnd)}
+        />
+        <MoneyRow
+          label="Phi dich vu nguoi mua (10%)"
+          value={formatVnd(fees.buyerFeeVnd)}
+        />
+        <div className="border-t border-ink-100 pt-1">
+          <MoneyRow
+            label="Tong nguoi mua tra"
+            value={formatVnd(fees.grossVnd)}
+            strong
+            tone="brand"
+          />
+        </div>
+        <div className="border-t border-ink-100 pt-1">
+          <MoneyRow
+            label="Nguoi ban nhan (tru 5% phi)"
+            value={formatVnd(fees.sellerNetVnd)}
+            tone="success"
+          />
+          <MoneyRow
+            label="San giu phi (15%)"
+            value={formatVnd(fees.platformFeeVnd)}
+            tone="muted"
+          />
+        </div>
+      </section>
 
       <section className="card space-y-3">
-        <OrderStatusPoller orderId={order.id} initialStatus={order.status} />
-        <p className="text-xs text-slate-400">Ma don: {order.id}</p>
-      </section>
-
-      <section className="card space-y-2">
-        <h2 className="font-semibold">Chi tiet tien</h2>
-        <Row label={`Gia ve x ${order.quantity}`} value={formatVnd(fees.subtotalVnd)} />
-        <Row label="Phi dich vu nguoi mua (10%)" value={formatVnd(fees.buyerFeeVnd)} />
-        <Row label="Tong nguoi mua tra" value={formatVnd(fees.grossVnd)} strong />
-        <hr className="border-slate-200" />
-        <Row label="Nguoi ban nhan (tru 5% phi)" value={formatVnd(fees.sellerNetVnd)} />
-        <Row label="San giu phi (15%)" value={formatVnd(fees.platformFeeVnd)} />
-      </section>
-
-      <section className="card space-y-2">
-        <h2 className="font-semibold">Thong bao tu cong thanh toan</h2>
+        <SectionTitle
+          title="Thong bao tu cong thanh toan"
+          hint="IPN la nguon su that duy nhat, khong phai redirect tren trinh duyet."
+        />
         {payments.length === 0 ? (
-          <p className="text-sm text-slate-500">Chua co thong bao IPN nao.</p>
+          <p className="text-sm text-ink-500">Chua co thong bao IPN nao.</p>
         ) : (
-          <ul className="space-y-1 text-sm text-slate-600">
+          <ul className="divide-line">
             {payments.map((p) => (
-              <li key={p.provider_txn_id} className="flex justify-between gap-2">
-                <span className="truncate">{p.provider_txn_id}</span>
-                <span className="shrink-0 font-medium">{p.status}</span>
+              <li
+                key={p.provider_txn_id}
+                className="flex items-center justify-between gap-3 py-2.5"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-mono text-xs text-ink-700">
+                    {p.provider_txn_id}
+                  </p>
+                  <p className="mt-0.5 text-xs text-ink-400">
+                    {p.provider} - {formatVnd(Number(p.amount_vnd))}
+                  </p>
+                </div>
+                <Badge
+                  tone={
+                    p.status === 'SUCCEEDED'
+                      ? 'success'
+                      : p.status === 'FAILED'
+                        ? 'danger'
+                        : 'warning'
+                  }
+                >
+                  {p.status}
+                </Badge>
               </li>
             ))}
           </ul>
         )}
       </section>
-    </div>
-  );
-}
-
-function Row({
-  label,
-  value,
-  strong,
-}: {
-  label: string;
-  value: string;
-  strong?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-slate-600">{label}</span>
-      <span className={strong ? 'font-bold' : 'font-medium'}>{value}</span>
     </div>
   );
 }

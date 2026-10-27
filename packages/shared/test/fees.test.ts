@@ -27,6 +27,36 @@ describe('computeFees', () => {
     }
   });
 
+  it('holds the invariant across a wide grid of odd prices and quantities', () => {
+    // This is the property the whole ledger depends on: if the platform fee
+    // were computed as "15% of the subtotal" independently, it would drift
+    // by a dong on odd amounts and the journal would not balance.
+    for (let price = 1; price <= 400; price += 7) {
+      for (const qty of [1, 2, 3, 6, 7, 11]) {
+        const f = computeFees(price, qty);
+        expect(f.grossVnd).toBe(f.sellerNetVnd + f.platformFeeVnd);
+        expect(Number.isSafeInteger(f.grossVnd)).toBe(true);
+        expect(Number.isSafeInteger(f.sellerNetVnd)).toBe(true);
+        expect(Number.isSafeInteger(f.platformFeeVnd)).toBe(true);
+      }
+    }
+  });
+
+  it('never lets the platform fee drift away from the two rounded fees', () => {
+    // 333_333 x 3 -> 999_999. 10% = 99_999.9, 5% = 49_999.95.
+    // Rounded independently: 100_000 and 50_000 -> 150_000.
+    // Computed as 15% of the subtotal it would be 149_999.85 -> 150_000
+    // here, but it drifts on other amounts.
+    const f = computeFees(333_333, 3);
+    expect(f.subtotalVnd).toBe(999_999);
+    expect(f.buyerFeeVnd).toBe(100_000);
+    expect(f.sellerFeeVnd).toBe(50_000);
+    expect(f.platformFeeVnd).toBe(150_000);
+    expect(f.grossVnd).toBe(1_099_999);
+    expect(f.sellerNetVnd).toBe(949_999);
+    expect(f.grossVnd).toBe(f.sellerNetVnd + f.platformFeeVnd);
+  });
+
   it('rounds each fee to whole VND (half-up)', () => {
     // 333 * 10% = 33.3 -> 33 ; 333 * 5% = 16.65 -> 17
     const f = computeFees(333, 1);

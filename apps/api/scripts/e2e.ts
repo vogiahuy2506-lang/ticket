@@ -11,13 +11,23 @@
  *      asserted
  *
  * Usage:
- *   API_BASE_URL=http://localhost:3011 npm run e2e -w @tce/api
+ *   npm run e2e -w @tce/api
+ *
+ * By default the runner boots its own API server on an ephemeral port, so the
+ * check needs nothing but a reachable database. Set E2E_EXTERNAL=1 to run the
+ * assertions against an already-running stack instead.
  */
 
 import crypto from 'node:crypto';
 
-const API = process.env.API_BASE_URL ?? 'http://localhost:3001';
 const SECRET = process.env.MOCK_GATEWAY_SECRET ?? 'mock-secret-local-dev';
+
+/** The API base URL. Set by the runner before the assertions start. */
+let API = process.env.API_BASE_URL ?? 'http://localhost:3001';
+
+export function setApiBase(url: string): void {
+  API = url.replace(/\/$/, '');
+}
 
 function sign(params: Record<string, string>): string {
   const filtered = Object.keys(params)
@@ -55,7 +65,7 @@ function assert(cond: boolean, message: string): void {
   console.log(`  ok - ${message}`);
 }
 
-async function main() {
+export async function runAssertions(): Promise<void> {
   console.log(`E2E against ${API}\n`);
 
   // ---------------------------------------------------------------- setup
@@ -63,14 +73,24 @@ async function main() {
     '/api/users',
   );
   const buyer = users.find((u) => u.role === 'buyer')!;
-  const seller = users.find((u) => u.role === 'seller')!;
-  console.log(`buyer=${buyer.name} seller=${seller.name}`);
 
   const { events } = await json<{ events: Array<{ id: string; name: string; status: string }> }>(
     '/api/events',
   );
-  const event = events.find((e) => e.status === 'scheduled')!;
-
+  // Use the fixture the runner provisioned. It is always a fresh, scheduled
+  // event, so the assertions are independent of what the seed data or a
+  // previous run left behind. Pick the *newest* one - older E2E events from
+  // previous runs have already been completed by the release step.
+  const e2eEvents = events.filter((e) => e.name.startsWith('E2E event'));
+  const event =
+    e2eEvents.find((e) => e.status === 'scheduled') ??
+    events.find((e) => e.status === 'scheduled') ??
+    e2eEvents[0] ??
+    events[0];
+  if (!event) {
+    throw new Error('No events in the database - run `npm run db:init` first');
+  }
+  console.log(`event=${event.name} (status=${event.status})`);
   const { listings } = await json<{
     listings: Array<{
       id: string;
@@ -80,16 +100,28 @@ async function main() {
       seller_id: string;
     }>;
   }>(`/api/events/${event.id}`);
-  const listing = listings.find((l) => l.seller_id === seller.id)!;
+  const listing =
+    listings.find((l) => l.title === 'E2E listing') ?? listings[0];
+  if (!listing) {
+    throw new Error('No listing on the E2E event');
+  }
+  // The seller of the listing is the one whose money moves, so the
+  // assertions must follow the listing, not a hard-coded user.
+  const seller = users.find((u) => u.id === listing.seller_id)!;
+  if (!seller) {
+    throw new Error(`Listing ${listing.id} has an unknown seller`);
+  }
   const price = Number(listing.price_vnd);
   const quantity = 2;
-  console.log(`event=${event.name} listing=${listing.title} price=${price} x${quantity}\n`);
+  console.log(`listing=${listing.title} price=${price} x${quantity} seller=${seller.name}\n`);
 
   // ------------------------------------------------------------- checkout
+  const idemKey = `e2e-${Date.now()}`;
   const checkout = await json<{ orderId: string; redirectUrl: string; grossVnd: number }>(
     '/api/checkout',
     {
       method: 'POST',
+      headers: { 'idempotency-key': idemKey },
       body: JSON.stringify({ listingId: listing.id, quantity, buyerId: buyer.id }),
     },
   );
@@ -106,6 +138,36 @@ async function main() {
 
   const before = await json<{ order: { status: string } }>(`/api/orders/${orderId}`);
   assert(before.order.status === 'PENDING_PAYMENT', 'order starts as PENDING_PAYMENT');
+
+  // ------------------------------------------- checkout idempotency
+  // The same Idempotency-Key must return the SAME order, not create a
+  // second one (a double-tapped "Pay" button).
+  const replayCheckout = await json<{ orderId: string; grossVnd: number }>(
+    '/api/checkout',
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idemKey },
+      body: JSON.stringify({ listingId: listing.id, quantity, buyerId: buyer.id }),
+    },
+  );
+  assert(
+    replayCheckout.orderId === orderId,
+    'replaying the checkout with the same Idempotency-Key returns the same order',
+  );
+
+  // Snapshot the balances *before* the payment so the assertions below are
+  // deltas. That way the script can be run repeatedly against a database
+  // that already holds data from previous runs.
+  const balancesBefore = await json<{
+    balances: Array<{ accountCode: string; balanceVnd: number }>;
+  }>('/api/ledger/balances');
+  const beforeByCode = new Map(
+    balancesBefore.balances.map((b) => [b.accountCode, b.balanceVnd]),
+  );
+  const pendingBefore = beforeByCode.get(`liability:user:${seller.id}:pending`) ?? 0;
+  const availableBefore = beforeByCode.get(`liability:user:${seller.id}:available`) ?? 0;
+  const feeBefore = beforeByCode.get('revenue:platform_fee') ?? 0;
+  const cashBefore = beforeByCode.get('asset:gateway_cash') ?? 0;
 
   // ------------------------------------------------------------------ IPN
   const payload: Record<string, string> = {
@@ -158,18 +220,35 @@ async function main() {
   const cash = byCode.get('asset:gateway_cash') ?? 0;
 
   assert(
-    pending === expectedSellerNet,
-    `seller pending balance = ${expectedSellerNet} (money is escrowed, not available)`,
+    pending === pendingBefore + expectedSellerNet,
+    `seller pending balance grew by ${expectedSellerNet} (money is escrowed, not available)`,
   );
-  assert(available === 0, 'seller has nothing available before the event ends');
   assert(
-    fee === expectedBuyerFee + expectedSellerFee,
+    available === availableBefore,
+    'seller available balance did not change before the event ends',
+  );
+  assert(
+    fee === feeBefore + expectedBuyerFee + expectedSellerFee,
     `platform kept ${expectedBuyerFee + expectedSellerFee} (10% + 5%)`,
   );
-  assert(cash === expectedGross, `gateway holds ${expectedGross}`);
+  assert(cash === cashBefore + expectedGross, `gateway holds ${expectedGross} more`);
 
   const audit = await json<{ ok: boolean }>('/api/ledger/audit');
   assert(audit.ok, 'every ledger transaction is balanced (debit == credit)');
+
+  // ------------------------------------------- the replay booked nothing
+  // The IPN was sent 4 times in total. The ledger must contain exactly ONE
+  // capture for this order, so the balances above are the proof.
+  const txnCount = await json<{ transactions: Array<{ refId: string | null }> }>(
+    '/api/ledger/transactions',
+  );
+  const capturesForOrder = txnCount.transactions.filter(
+    (t) => t.refId === orderId && t.refType === 'PAYMENT_CAPTURE',
+  );
+  assert(
+    capturesForOrder.length === 1,
+    `the replayed IPN booked the money exactly once (found ${capturesForOrder.length})`,
+  );
 
   // ------------------------------------------------- escrow release
   const released = await json<{ released: number; releasedVnd: number }>(
@@ -191,8 +270,8 @@ async function main() {
     'pending balance dropped after the event completed',
   );
   assert(
-    availableAfter === expectedSellerNet,
-    `available balance = ${expectedSellerNet} after the release`,
+    availableAfter === available + expectedSellerNet,
+    `available balance grew by ${expectedSellerNet} after the release`,
   );
 
   const orderAfter = await json<{ order: { status: string } }>(`/api/orders/${orderId}`);
@@ -201,10 +280,46 @@ async function main() {
   const audit2 = await json<{ ok: boolean }>('/api/ledger/audit');
   assert(audit2.ok, 'ledger is still balanced after the release');
 
+  // ------------------------------------- the journal cannot be rewritten
+  // The ledger is append-only at the database level: an UPDATE or DELETE on
+  // a posted entry is rejected by a trigger.
+  const integrity = await json<{
+    appendOnly: boolean;
+    updateRejected?: boolean;
+    deleteRejected?: boolean;
+  }>('/api/ledger/integrity');
+  assert(
+    integrity.appendOnly,
+    'a posted ledger entry cannot be updated or deleted (DB trigger)',
+  );
+
+  // --------------------------------------- a completed event sells no more
+  // The event has just been marked completed. Buying a ticket for it now
+  // would trap the money in escrow with no way to release it.
+  const closedCheckout = await fetch(`${API}/api/checkout`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      listingId: listing.id,
+      quantity: 1,
+      buyerId: buyer.id,
+    }),
+  });
+  assert(
+    closedCheckout.status === 409,
+    'checkout for a completed event is rejected (409)',
+  );
+
   console.log('\nAll E2E assertions passed.');
 }
 
-main().catch((err) => {
-  console.error('\nE2E failed:', err.message);
-  process.exit(1);
-});
+// Run standalone when invoked directly (`tsx scripts/e2e.ts`), but not when
+// imported by the runner (`scripts/e2e-run.ts`).
+const invokedDirectly =
+  process.argv[1]?.includes('e2e.ts') && !process.argv[1]?.includes('e2e-run.ts');
+if (invokedDirectly) {
+  runAssertions().catch((err) => {
+    console.error('\nE2E failed:', err.message);
+    process.exit(1);
+  });
+}

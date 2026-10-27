@@ -103,3 +103,49 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 
 CREATE INDEX IF NOT EXISTS ledger_entries_txn_idx ON ledger_entries(txn_id);
 CREATE INDEX IF NOT EXISTS ledger_entries_account_idx ON ledger_entries(account_id);
+
+-- ---------------------------------------------------------------------
+-- Immutability of the journal.
+--
+-- Decision (brief was silent): a posted ledger entry must never be edited
+-- or deleted. The only way to correct a mistake is to post a *reversing*
+-- transaction, which keeps the history auditable. This is enforced by the
+-- database, not by convention, so an operator with SQL access cannot
+-- silently rewrite the money history.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION forbid_ledger_mutation() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'ledger entries are append-only (attempted %)', TG_OP
+    USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS ledger_entries_no_update ON ledger_entries;
+CREATE TRIGGER ledger_entries_no_update
+  BEFORE UPDATE OR DELETE ON ledger_entries
+  FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
+
+DROP TRIGGER IF EXISTS ledger_transactions_no_update ON ledger_transactions;
+CREATE TRIGGER ledger_transactions_no_update
+  BEFORE UPDATE OR DELETE ON ledger_transactions
+  FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
+
+-- The same rule for the gateway notifications: they are evidence of what
+-- the gateway told us and must not be rewritten either.
+DROP TRIGGER IF EXISTS payments_no_update ON payments;
+CREATE TRIGGER payments_no_update
+  BEFORE UPDATE OR DELETE ON payments
+  FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
+
+-- ---------------------------------------------------------------------
+-- Idempotency of checkout.
+--
+-- Decision (brief was silent): a double-tapped "Pay" button must not
+-- create two orders. The client sends an Idempotency-Key; the same key
+-- from the same buyer returns the original order instead of a new one.
+-- ---------------------------------------------------------------------
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS orders_idempotency_uniq
+  ON orders (buyer_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;

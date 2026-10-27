@@ -28,6 +28,7 @@ export interface OrderRow {
   platform_fee_vnd: string;
   status: string;
   gateway: string;
+  idempotency_key: string | null;
   created_at: string;
   paid_at: string | null;
   released_at: string | null;
@@ -61,13 +62,34 @@ export class OrderError extends Error {
  */
 export async function createOrder(
   sql: Db,
-  args: { buyerId: string; listingId: string; quantity: number },
+  args: {
+    buyerId: string;
+    listingId: string;
+    quantity: number;
+    /** optional client-supplied key; a repeated key returns the same order */
+    idempotencyKey?: string | null;
+  },
 ): Promise<OrderRow> {
   if (!Number.isSafeInteger(args.quantity) || args.quantity <= 0) {
     throw new OrderError('So luong khong hop le', 'INVALID_QUANTITY');
   }
 
   return await withTx(sql, async (tx) => {
+    // Idempotency: a double-tapped "Pay" button sends the same key twice.
+    // Return the original order instead of reserving a second batch of
+    // tickets and creating a second payment.
+    if (args.idempotencyKey) {
+      const existing = await tx<OrderRow[]>`
+        SELECT * FROM orders
+        WHERE buyer_id = ${args.buyerId}
+          AND idempotency_key = ${args.idempotencyKey}
+        LIMIT 1
+      `;
+      if (existing[0]) {
+        return existing[0];
+      }
+    }
+
     const listings = await tx<ListingRow[]>`
       SELECT id, event_id, seller_id, title, quantity_total, quantity_sold, price_vnd
       FROM listings
@@ -77,6 +99,20 @@ export async function createOrder(
     const listing = listings[0];
     if (!listing) {
       throw new OrderError('Khong tim thay listing', 'LISTING_NOT_FOUND', 404);
+    }
+
+    // A ticket for an event that already happened can never be released from
+    // escrow: the money would be trapped with no way out. Refuse the
+    // checkout instead.
+    const events = await tx<{ status: string }[]>`
+      SELECT status FROM events WHERE id = ${listing.event_id}
+    `;
+    if (events[0]?.status === 'completed') {
+      throw new OrderError(
+        'Su kien nay da hoan tat, khong ban duoc ve nua',
+        'EVENT_COMPLETED',
+        409,
+      );
     }
 
     const remaining = listing.quantity_total - listing.quantity_sold;
@@ -94,13 +130,14 @@ export async function createOrder(
       INSERT INTO orders (
         buyer_id, listing_id, event_id, seller_id, quantity,
         unit_price_vnd, subtotal_vnd, buyer_fee_vnd, seller_fee_vnd,
-        gross_vnd, seller_net_vnd, platform_fee_vnd, status, gateway
+        gross_vnd, seller_net_vnd, platform_fee_vnd, status, gateway,
+        idempotency_key
       )
       VALUES (
         ${args.buyerId}, ${listing.id}, ${listing.event_id}, ${listing.seller_id}, ${args.quantity},
         ${listing.price_vnd}, ${fees.subtotalVnd}, ${fees.buyerFeeVnd}, ${fees.sellerFeeVnd},
         ${fees.grossVnd}, ${fees.sellerNetVnd}, ${fees.platformFeeVnd},
-        'PENDING_PAYMENT', 'vnpay'
+        'PENDING_PAYMENT', 'vnpay', ${args.idempotencyKey ?? null}
       )
       RETURNING *
     `;
@@ -224,22 +261,42 @@ export async function handleIpn(
  * Runs in one DB transaction so an event is either fully released or not at
  * all. Each order gets its own ledger transaction so the ledger stays
  * traceable back to the order.
+ *
+ * Orders that are still PENDING_PAYMENT are cancelled and their reserved
+ * tickets are returned to the listing: the event is over, so they can never
+ * be paid for, and leaving them pending would keep the quantity reserved
+ * forever.
  */
 export async function releaseEventEscrow(
   sql: Db,
   args: { eventId: string },
-): Promise<{ released: number; releasedVnd: number; orderIds: string[] }> {
+): Promise<{ released: number; releasedVnd: number; cancelled: number; orderIds: string[] }> {
   return await withTx(sql, async (tx) => {
     const orders = await tx<OrderRow[]>`
       SELECT * FROM orders
-      WHERE event_id = ${args.eventId} AND status = 'PAID'
+      WHERE event_id = ${args.eventId} AND status IN ('PAID', 'PENDING_PAYMENT')
       FOR UPDATE
     `;
 
     let releasedVnd = 0;
+    let cancelled = 0;
     const orderIds: string[] = [];
 
     for (const order of orders) {
+      if (order.status === 'PENDING_PAYMENT') {
+        // never paid, never escrowed - just give the tickets back
+        await tx`
+          UPDATE orders SET status = 'CANCELLED' WHERE id = ${order.id}
+        `;
+        await tx`
+          UPDATE listings
+          SET quantity_sold = quantity_sold - ${order.quantity}
+          WHERE id = ${order.listing_id}
+        `;
+        cancelled += 1;
+        continue;
+      }
+
       const amount = Number(order.seller_net_vnd);
       if (amount <= 0) continue;
 
@@ -272,7 +329,7 @@ export async function releaseEventEscrow(
       UPDATE events SET status = 'completed' WHERE id = ${args.eventId}
     `;
 
-    return { released: orderIds.length, releasedVnd, orderIds };
+    return { released: orderIds.length, releasedVnd, cancelled, orderIds };
   });
 }
 

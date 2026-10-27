@@ -8,6 +8,42 @@ interface Props {
   initialStatus: string;
 }
 
+const STATUS_META: Record<
+  string,
+  { label: string; cls: string; dot: string; hint: string }
+> = {
+  PENDING_PAYMENT: {
+    label: 'Dang cho thanh toan',
+    cls: 'bg-amber-50 text-amber-800 ring-amber-200',
+    dot: 'bg-amber-500',
+    hint: 'Da chuyen toi cong thanh toan.',
+  },
+  PAID: {
+    label: 'Da thanh toan - tien giu trong escrow',
+    cls: 'bg-sky-50 text-sky-800 ring-sky-200',
+    dot: 'bg-sky-500',
+    hint: 'Tien da vao cong thanh toan, nguoi ban chua nhan duoc.',
+  },
+  RELEASED: {
+    label: 'Da giai ngan',
+    cls: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
+    dot: 'bg-emerald-500',
+    hint: 'Su kien da dien ra, tien da chuyen sang so du kha dung cua nguoi ban.',
+  },
+  FAILED: {
+    label: 'Thanh toan that bai',
+    cls: 'bg-red-50 text-red-800 ring-red-200',
+    dot: 'bg-red-500',
+    hint: 'Thanh toan khong thanh cong, so ve da duoc tra lai.',
+  },
+  CANCELLED: {
+    label: 'Da huy',
+    cls: 'bg-ink-100 text-ink-700 ring-ink-200',
+    dot: 'bg-ink-400',
+    hint: 'Don hang da bi huy.',
+  },
+};
+
 /**
  * Polls the API for the *real* order status.
  *
@@ -59,48 +95,50 @@ export default function OrderStatusPoller({ orderId, initialStatus }: Props) {
     }
   };
 
+  const meta = STATUS_META[status] ?? {
+    label: status,
+    cls: 'bg-ink-100 text-ink-700 ring-ink-200',
+    dot: 'bg-ink-400',
+    hint: '',
+  };
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium">Trang thai don hang</span>
-        <StatusBadge status={status} />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-medium text-ink-700">Trang thai don hang</span>
+        <span
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset ${meta.cls}`}
+        >
+          <span
+            aria-hidden
+            className={`h-1.5 w-1.5 rounded-full ${meta.dot} ${
+              status === 'PENDING_PAYMENT' ? 'animate-pulse-soft' : ''
+            }`}
+          />
+          {meta.label}
+        </span>
       </div>
 
+      {meta.hint ? (
+        <p className="text-xs leading-relaxed text-ink-500">{meta.hint}</p>
+      ) : null}
+
       {status === 'PENDING_PAYMENT' ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3.5 text-sm text-amber-900">
           <p>
-            Da chuyen toi cong thanh toan. Neu vua moi thanh toan xong, thong bao
-            (IPN) tu cong may den trong vai giay - trang nay se tu cap nhat.
+            Neu vua moi thanh toan xong, thong bao (IPN) tu cong may den trong vai
+            giay - trang nay se tu cap nhat.
           </p>
           <button
             type="button"
             onClick={recheck}
             disabled={checking}
-            className="btn-secondary mt-2"
+            className="btn-secondary mt-2.5 bg-white"
           >
             {checking ? 'Dang kiem tra...' : 'Kiem tra lai trang thai'}
           </button>
         </div>
       ) : null}
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { label: string; cls: string }> = {
-    PENDING_PAYMENT: {
-      label: 'Dang cho thanh toan',
-      cls: 'bg-amber-100 text-amber-700',
-    },
-    PAID: { label: 'Da thanh toan (escrow)', cls: 'bg-blue-100 text-blue-700' },
-    RELEASED: { label: 'Da giai ngan', cls: 'bg-emerald-100 text-emerald-700' },
-    FAILED: { label: 'Thanh toan that bai', cls: 'bg-red-100 text-red-700' },
-    CANCELLED: { label: 'Da huy', cls: 'bg-slate-200 text-slate-700' },
-  };
-  const item = map[status] ?? { label: status, cls: 'bg-slate-200 text-slate-700' };
-  return (
-    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.cls}`}>
-      {item.label}
-    </span>
   );
 }

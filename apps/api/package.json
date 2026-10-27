@@ -13,7 +13,7 @@
     "db:init": "tsx src/db/init.ts",
     "db:reset": "tsx src/db/reset.ts",
     "test": "vitest run",
-    "e2e": "tsx scripts/e2e.ts"
+    "e2e": "tsx scripts/e2e-run.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
