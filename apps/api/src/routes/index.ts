@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { checkoutSchema, computeFees, createEventSchema } from '@tce/shared';
+import { checkoutSchema, computeFees, createEventSchema, uuidSchema } from '@tce/shared';
 import { providerFor, type AppDeps } from './helpers.js';
 import {
   cancelOrder,
@@ -45,6 +45,18 @@ function clientIpFrom(req: FastifyRequest): string {
   return candidate || '127.0.0.1';
 }
 
+/**
+ * Checks that a path parameter is a UUID.
+ *
+ * Every id in this system is a UUID, and a path parameter that is not one
+ * names a row that cannot exist. Answering "404 not found" straight away
+ * keeps a typo or a truncated id out of the database, where PostgreSQL
+ * would reject it and turn a bad URL into a 500.
+ */
+function isUuid(value: string): boolean {
+  return uuidSchema.safeParse(value).success;
+}
+
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   const deps = app as unknown as AppDeps;
   const { sql, config } = deps;
@@ -76,6 +88,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get<{ Params: { id: string } }>('/api/events/:id', async (req, reply) => {
+    if (!isUuid(req.params.id)) {
+      return reply.code(404).send({ error: 'EVENT_NOT_FOUND' });
+    }
     await expireStaleOrders(sql);
     const events = await sql`
       SELECT id, name, venue, starts_at, status FROM events WHERE id = ${req.params.id}
@@ -203,6 +218,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string }; Body: { buyerId?: string } }>(
     '/api/orders/:id/cancel',
     async (req, reply) => {
+      if (!isUuid(req.params.id)) {
+        return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
+      }
       const buyerId = (req.body as { buyerId?: string } | undefined)?.buyerId;
       if (!buyerId) {
         return reply.code(400).send({ error: 'BUYER_REQUIRED' });
@@ -221,6 +239,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get<{ Params: { id: string } }>('/api/orders/:id', async (req, reply) => {
+    if (!isUuid(req.params.id)) {
+      return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
+    }
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
 
@@ -257,6 +278,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    */
   type RecheckRoute = { Params: { id: string }; Querystring: { gateway?: string } };
   app.post<RecheckRoute>('/api/orders/:id/recheck', async (req, reply) => {
+    if (!isUuid(req.params.id)) {
+      return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
+    }
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
     const askGateway = req.query.gateway === '1';
@@ -491,6 +515,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * listed in the README under "not production ready".
    */
   app.post<{ Params: { id: string } }>('/api/events/:id/complete', async (req, reply) => {
+    if (!isUuid(req.params.id)) {
+      return reply.code(404).send({ error: 'EVENT_NOT_FOUND' });
+    }
     try {
       return await releaseEventEscrow(sql, { eventId: req.params.id });
     } catch (err) {
@@ -504,7 +531,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --------------------------------------------------------------- wallet
-  app.get<{ Params: { userId: string } }>('/api/wallet/:userId', async (req) => {
+  app.get<{ Params: { userId: string } }>('/api/wallet/:userId', async (req, reply) => {
+    if (!isUuid(req.params.userId)) {
+      return reply.code(404).send({ error: 'USER_NOT_FOUND' });
+    }
     const balances = await getUserBalances(sql, req.params.userId);
     // The transactions are filtered by the *user* in the database, so a
     // busy platform cannot push the user's own entries out of the window.

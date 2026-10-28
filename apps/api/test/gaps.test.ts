@@ -530,4 +530,31 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     // The ticket is still reserved for the buyer.
     expect(await data.quantitySold(fx.listing.id)).toBe(1);
   });
+
+  it('answers 404 - not 500 - for an id that is not a UUID', async () => {
+    // Every id in this system is a UUID. A truncated or mistyped id names
+    // a row that cannot exist, so the route has to answer "not found".
+    // Handing the string to PostgreSQL made it reject the cast, and the
+    // route reported a 500 - so a bad URL looked like a broken server.
+    const badIds = ['8f2a1b3c', 'not-a-uuid', '123', ''];
+
+    for (const badId of badIds) {
+      const cases: Array<[string, RequestInit?]> = [
+        [`${base}/api/orders/${badId}`, undefined],
+        [`${base}/api/events/${badId}`, undefined],
+        [`${base}/api/wallet/${badId}`, undefined],
+        [`${base}/api/orders/${badId}/recheck`, { method: 'POST' }],
+        [`${base}/api/orders/${badId}/cancel`, { method: 'POST' }],
+        [`${base}/api/events/${badId}/complete`, { method: 'POST' }],
+      ];
+
+      for (const [url, init] of cases) {
+        const res = await fetch(url, init);
+        expect(
+          res.status,
+          `${url} answered ${res.status}, expected 404`,
+        ).toBe(404);
+      }
+    }
+  });
 });

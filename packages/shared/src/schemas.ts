@@ -1,5 +1,15 @@
 import { z } from 'zod';
 
+/**
+ * A resource id taken from the URL.
+ *
+ * Every id in this system is a UUID. A path parameter that is not one
+ * cannot exist, so the route can answer "404 not found" straight away
+ * instead of handing the string to PostgreSQL - which would reject it and
+ * turn a typo into a 500.
+ */
+export const uuidSchema = z.string().uuid();
+
 export const checkoutSchema = z.object({
   listingId: z.string().uuid(),
   quantity: z.coerce.number().int().min(1).max(50),
