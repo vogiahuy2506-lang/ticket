@@ -159,6 +159,24 @@ npm run dev
 The storefront comes up on <http://localhost:3000> and the API on
 <http://localhost:3101>.
 
+> **Port conflict (`EADDRINUSE`)?** The Docker stack publishes the same two
+> ports the host servers need (`API_PORT=3101`, `WEB_PORT=3000`), so the two
+> ways of running the app cannot be active at the same time. If `npm run dev`
+> dies with `listen EADDRINUSE`, the Docker stack is still up:
+>
+> ```bash
+> docker compose stop api web   # keep the database running
+> ```
+>
+> `npm run dev:host` does that for you and then starts the servers:
+>
+> ```bash
+> npm run dev:host
+> ```
+>
+> The reverse switch - stop the host servers and bring the Docker stack up
+> instead - is `npm run dev:docker`.
+
 > `.env` (copied from `.env.example`) points `DATABASE_URL` at
 > `localhost:55432`, which is the **host port** of the compose database. That
 > is the right value for processes running on the host. Inside the compose
