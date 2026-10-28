@@ -64,15 +64,7 @@ jobs:
         run: npm run build
 
       - name: Check the journal is balanced after the whole run
-        run: |
-          npx --yes tsx -e "
-            import { getSql } from './apps/api/src/db/client.ts';
-            import { auditLedger } from './apps/api/src/services/ledger.ts';
-            const sql = getSql();
-            const audit = await auditLedger(sql);
-            if (!audit.ok) {
-              console.error('unbalanced transactions:', audit.unbalanced);
-              process.exit(1);
-            }
-            console.log('[ci] the journal is balanced');
-          "
+        # A script file, not an inline `tsx -e`: the snippet form is
+        # evaluated as CommonJS, where a top-level `await` is a syntax
+        # error, so the check never actually ran.
+        run: npx tsx apps/api/scripts/audit-ledger.ts
