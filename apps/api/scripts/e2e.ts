@@ -75,10 +75,30 @@ function sign(params: Record<string, string>): string {
  */
 const WIRE_AMOUNT_FACTOR = 100;
 
+/**
+ * The user the run is acting as.
+ *
+ * The API checks the role of every mutating endpoint and the ownership of
+ * every wallet and receipt, so a request has to say who it is. The role is
+ * looked up in the database by the API itself, so only the id travels.
+ *
+ * It defaults to the buyer, which is who most of these calls are; the
+ * operator actions switch it for the call that needs it.
+ */
+let ACTOR: string | null = null;
+
+function actingAs(userId: string): void {
+  ACTOR = userId;
+}
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(ACTOR ? { 'x-tce-user-id': ACTOR } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`${path} -> ${res.status}: ${text.slice(0, 400)}`);
@@ -102,6 +122,9 @@ export async function runAssertions(): Promise<void> {
     '/api/users',
   );
   const buyer = users.find((u) => u.role === 'buyer')!;
+  const operator = users.find((u) => u.role === 'admin');
+  // Most of the run is the buyer: buying, paying, checking the receipt.
+  actingAs(buyer.id);
 
   const { events } = await json<{ events: Array<{ id: string; name: string; status: string }> }>(
     '/api/events',
@@ -162,7 +185,7 @@ export async function runAssertions(): Promise<void> {
     {
       method: 'POST',
       headers: { 'idempotency-key': idemKey },
-      body: JSON.stringify({ listingId: listing.id, quantity, buyerId: buyer.id }),
+      body: JSON.stringify({ listingId: listing.id, quantity }),
     },
   );
   const orderId = checkout.orderId;
@@ -199,7 +222,7 @@ export async function runAssertions(): Promise<void> {
     {
       method: 'POST',
       headers: { 'idempotency-key': idemKey },
-      body: JSON.stringify({ listingId: listing.id, quantity, buyerId: buyer.id }),
+      body: JSON.stringify({ listingId: listing.id, quantity }),
     },
   );
   assert(
@@ -328,7 +351,7 @@ export async function runAssertions(): Promise<void> {
     {
       method: 'POST',
       headers: { 'idempotency-key': `e2e-decline-${Date.now()}` },
-      body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+      body: JSON.stringify({ listingId: listing.id, quantity: 1 }),
     },
   );
   const declineOrderId = declineCheckout.orderId;
@@ -391,7 +414,7 @@ export async function runAssertions(): Promise<void> {
   const retryCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>('/api/checkout', {
     method: 'POST',
     headers: { 'idempotency-key': `e2e-retry-${Date.now()}` },
-    body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+    body: JSON.stringify({ listingId: listing.id, quantity: 1 }),
   });
   const retryDeclinePayload: Record<string, string> = {
     vnp_Version: '2.1.0',
@@ -465,7 +488,7 @@ export async function runAssertions(): Promise<void> {
     {
       method: 'POST',
       headers: { 'idempotency-key': `e2e-lost-${Date.now()}` },
-      body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+      body: JSON.stringify({ listingId: listing.id, quantity: 1 }),
     },
   );
 
@@ -525,7 +548,7 @@ export async function runAssertions(): Promise<void> {
   const leakCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>('/api/checkout', {
     method: 'POST',
     headers: { 'idempotency-key': `e2e-leak-${Date.now()}` },
-    body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+    body: JSON.stringify({ listingId: listing.id, quantity: 1 }),
   });
 
   const soldBeforeLeak = (
@@ -586,11 +609,10 @@ export async function runAssertions(): Promise<void> {
   // and not about the event being closed.
   const sellerOwnCheckout = await fetch(`${API}/api/checkout`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-tce-user-id': seller.id },
     body: JSON.stringify({
       listingId: listing.id,
       quantity: 1,
-      buyerId: seller.id,
     }),
   });
   assert(
@@ -608,7 +630,7 @@ export async function runAssertions(): Promise<void> {
   const lateCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>('/api/checkout', {
     method: 'POST',
     headers: { 'idempotency-key': `e2e-late-${Date.now()}` },
-    body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+    body: JSON.stringify({ listingId: listing.id, quantity: 1 }),
   });
 
   // Force the reservation to expire.
@@ -715,6 +737,11 @@ export async function runAssertions(): Promise<void> {
     )
   ).balances.find((b) => b.accountCode === `liability:user:${seller.id}:available`)?.balanceVnd ?? 0;
 
+  // Releasing the escrow is an operator action, so the run acts as the
+  // operator for it.
+  if (!operator) throw new Error('No admin user in the database');
+  actingAs(operator.id);
+
   const released = await json<{ released: number; releasedVnd: number }>(
     `/api/events/${event.id}/complete`,
     { method: 'POST' },
@@ -816,11 +843,10 @@ export async function runAssertions(): Promise<void> {
   // would trap the money in escrow with no way to release it.
   const closedCheckout = await fetch(`${API}/api/checkout`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-tce-user-id': buyer.id },
     body: JSON.stringify({
       listingId: listing.id,
       quantity: 1,
-      buyerId: buyer.id,
     }),
   });
   assert(
@@ -835,6 +861,11 @@ export async function runAssertions(): Promise<void> {
   //
   // Before the fix the notification was accepted but nothing was posted:
   // the money disappeared.
+  // The cancelled-order scenario also completes an event, so the run acts
+  // as the operator for it too.
+  if (!operator) throw new Error('No admin user in the database');
+  actingAs(operator.id);
+
   const cancelEvent = await sql<{ id: string }[]>`
     INSERT INTO events (name, venue, starts_at)
     VALUES ('E2E cancelled event ' || now()::text, 'E2E venue', now() + interval '30 days')
@@ -846,6 +877,9 @@ export async function runAssertions(): Promise<void> {
     RETURNING id
   `;
 
+  // The buyer buys again.
+  actingAs(buyer.id);
+
   const cancelledCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>(
     '/api/checkout',
     {
@@ -854,13 +888,14 @@ export async function runAssertions(): Promise<void> {
       body: JSON.stringify({
         listingId: cancelListing[0]!.id,
         quantity: 1,
-        buyerId: buyer.id,
       }),
     },
   );
 
-  // Completing the event cancels the unpaid order.
+  // Completing the event cancels the unpaid order - an operator action.
+  actingAs(operator.id);
   await json(`/api/events/${cancelEvent[0]!.id}/complete`, { method: 'POST' });
+  actingAs(buyer.id);
   const cancelledStatus = await json<{ order: { status: string } }>(
     `/api/orders/${cancelledCheckout.orderId}`,
   );
@@ -1011,6 +1046,10 @@ export async function runAssertions(): Promise<void> {
   // --------------------------------------------------- the raw IPN log
   // Every notification is logged, including the ones we rejected, so an
   // operator can reconcile against the gateway's own transaction list.
+  // The log is the operator's data, so the run acts as the operator.
+  if (!operator) throw new Error('No admin user in the database');
+  actingAs(operator.id);
+
   const { events: rawEvents } = await json<{
     events: Array<{
       txn_ref: string | null;

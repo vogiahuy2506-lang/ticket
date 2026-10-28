@@ -234,6 +234,94 @@ Tương tự `delete from ledger_entries;` → bị từ chối ✓
 - Không có API gọi chuyển khoản ngân hàng nào. Giải ngân chỉ là ghi giữa 2 tài khoản
   nợ trong ledger (README mục *"The escrow release is not a real settlement"* nói rõ) ✓
 
+### 4.7 Database tự bảo vệ cân bằng (không chỉ ứng dụng)
+
+Ứng dụng đã tự kiểm tra `debit == credit` trước khi ghi. Điểm cần chứng minh
+ở đây là **tầng database cũng vậy** — ai có SQL access cũng không chèn được
+một dòng lệch một vế.
+
+```bash
+docker compose exec -T db psql -U postgres -d tickets <<'SQL'
+BEGIN;
+INSERT INTO ledger_transactions (ref_type, memo)
+  VALUES ('MANUAL_TEST', 'thu nghiem can bang');
+INSERT INTO ledger_entries (txn_id, account_id, direction, amount_vnd)
+  SELECT (SELECT id FROM ledger_transactions WHERE memo='thu nghiem can bang' LIMIT 1),
+         id, 'debit', 999999
+  FROM ledger_accounts WHERE code = 'asset:gateway_cash';
+COMMIT;
+SQL
+```
+→ **ERROR: unbalanced ledger transaction ...: debit 999999 <> credit 0** ✓
+→ transaction bị rollback, **không có gì được ghi** ✓
+
+Vì sao lại là *deferrable*? Vì các dòng của một giao dịch được insert **từng dòng
+một**, nên tổng chỉ biết được khi dòng cuối cùng vào — vì vậy trigger chạy ở
+`COMMIT`, không phải sau mỗi câu lệnh.
+
+Dọn lại (không bắt buộc, dữ liệu test cũng không ảnh hưởng demo):
+```bash
+docker compose exec -T db psql -U postgres -d tickets -c "
+ALTER TABLE ledger_entries DISABLE TRIGGER ledger_entries_no_update;
+ALTER TABLE ledger_transactions DISABLE TRIGGER ledger_transactions_no_update;
+DELETE FROM ledger_entries WHERE txn_id IN (SELECT id FROM ledger_transactions WHERE memo='thu nghiem can bang');
+DELETE FROM ledger_transactions WHERE memo='thu nghiem can bang';
+ALTER TABLE ledger_entries ENABLE TRIGGER ledger_entries_no_update;
+ALTER TABLE ledger_transactions ENABLE TRIGGER ledger_transactions_no_update;"
+```
+
+### 4.8 Phân quyền được kiểm ở tầng API (không chỉ ẩn nút)
+
+Ứng dụng chỉ cần giấu nút là đủ cho một bài demo, nhưng **API cũng phải từ chối**.
+Vì vậy các endpoint sau kiểm tra vai trò *trong API*:
+
+| Endpoint | Cần vai trò | Kiểm tra bằng cách |
+|---|---|---|
+| `POST /api/events/:id/complete` | `admin` | gọi bằng `curl` với header của người mua |
+| `GET /api/admin/overview` | `admin` | idem |
+| `GET /api/admin/orders` | `admin` | idem |
+| `POST /api/admin/events` | `admin` | idem |
+| `GET /api/admin/payment-events` | `admin` | idem |
+| `GET /api/wallet/:userId` | chính chủ (hoặc admin) | xem ví của người khác |
+| `GET /api/orders?userId=…` | chính chủ (hoặc admin) | xem đơn của người khác |
+| `GET /api/orders/:id` | người mua / người bán / admin | xem đơn của người khác |
+
+Lấy id của một người bất kỳ:
+```bash
+docker compose exec -T db psql -U postgres -d tickets -t -c "
+select id, name, role from users order by role;"
+```
+
+Thử giải ngân escrow bằng tài khoản người mua:
+```bash
+EVENT_ID=$(docker compose exec -T db psql -U postgres -d tickets -t -c "select id from events limit 1;")
+BUYER_ID=$(docker compose exec -T db psql -U postgres -d tickets -t -c "select id from users where role='buyer' limit 1;")
+
+curl -s -X POST "http://localhost:3101/api/events/$EVENT_ID/complete" \
+  -H "content-type: application/json" \
+  -H "x-tce-user-id: $BUYER_ID"
+```
+→ `{"error":"FORBIDDEN","message":"Endpoint này cần vai trò admin"}` ✓
+→ escrow **không** bị giải ngân ✓
+
+Đọc ví của người khác:
+```bash
+SELLER_ID=$(docker compose exec -T db psql -U postgres -d tickets -t -c "select id from users where role='seller' limit 1;")
+curl -s "http://localhost:3101/api/wallet/$SELLER_ID" -H "x-tce-user-id: $BUYER_ID"
+```
+→ `{"error":"FORBIDDEN", ...}` ✓
+
+Không nói ai đang làm gì:
+```bash
+curl -s "http://localhost:3101/api/wallet/$SELLER_ID"
+```
+→ `{"error":"UNKNOWN_CALLER"}` (401) ✓
+
+> Lưu ý khi trình diễn: header `x-tce-user-id` chỉ là *danh tính*, không phải
+> *bằng chứng*. API tự tra vai trò trong database, nên không thể tự khai vai
+> admin — nhưng ai cũng có thể chọn "Ops Admin" trong dropdown (đề bài cho
+> phép). README ghi rõ điểm này.
+
 ---
 
 ## 5. Trả lời trực tiếp các câu hỏi giám khảo có thể hỏi

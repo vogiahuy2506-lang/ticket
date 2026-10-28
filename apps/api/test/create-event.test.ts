@@ -7,6 +7,7 @@ import {
   type IsolatedDb,
 } from './helpers/db.js';
 import { TestData } from './helpers/fixtures.js';
+import { asUser } from './helpers/acting-user.js';
 
 /**
  * Creating a new event.
@@ -30,6 +31,8 @@ describe.skipIf(!dbAvailable)('POST /api/admin/events', () => {
     useIsolatedDb(db.sql);
     data = new TestData(db.sql);
 
+    operatorId = (await data.user('Operator create-event', 'admin')).id;
+
     app = await buildServer();
     await app.listen({ port: 0, host: '127.0.0.1' });
     const address = app.server.address();
@@ -42,10 +45,17 @@ describe.skipIf(!dbAvailable)('POST /api/admin/events', () => {
     await db?.drop();
   });
 
+  /**
+   * Creating an event is an operator action, so the request has to say
+   * which operator it is. The API looks the role up in the database, so
+   * the test only supplies the id.
+   */
+  let operatorId: string;
+
   async function post(path: string, body: unknown) {
     const res = await fetch(`${base}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...asUser(operatorId) },
       body: JSON.stringify(body),
     });
     return { status: res.status, body: (await res.json()) as never };

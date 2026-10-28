@@ -24,6 +24,8 @@ import {
 import { getAdminOverview, listAllOrders } from '../services/admin.js';
 import { createEvent, CreateEventError } from '../services/events.js';
 import { registerMockGatewayRoutes } from './mock-gateway.js';
+import { actorFrom, requireRole } from '../auth.js';
+import { RateLimiter } from '../rate-limit.js';
 import { withTx } from '../db/types.js';
 
 /**
@@ -118,9 +120,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'INVALID_INPUT', detail: parsed.error.flatten() });
     }
     const { listingId, quantity } = parsed.data;
-    if (!body.buyerId) {
-      return reply.code(400).send({ error: 'BUYER_REQUIRED' });
+
+    // The buyer is the acting user, not whatever the body claims. The
+    // storefront sends the session's user id in the header, and the role
+    // is looked up in the database, so a caller cannot buy as somebody
+    // else by editing a request body.
+    const actor = await actorFrom(sql, req);
+    if (!actor) {
+      return reply.code(401).send({ error: 'UNKNOWN_CALLER' });
     }
+    const buyerId = actor.id;
 
     // Optional Idempotency-Key. The storefront sends a key per checkout
     // attempt, so a double-tapped "Pay" button returns the original order
@@ -132,7 +141,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const order = await createOrder(sql, {
-        buyerId: body.buyerId,
+        buyerId,
         listingId,
         quantity,
         idempotencyKey,
@@ -202,6 +211,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       // The role comes from the database, never from the query string:
       // a caller must not be able to ask for somebody else's orders.
+      //
+      // And the acting user has to be that user (or the operator). Without
+      // this check, knowing somebody else's id is enough to read their
+      // receipts.
+      const actor = await actorFrom(sql, req);
+      if (!actor) {
+        return reply.code(401).send({ error: 'UNKNOWN_CALLER' });
+      }
+      if (actor.id !== user.id && actor.role !== 'admin') {
+        return reply.code(403).send({
+          error: 'FORBIDDEN',
+          message: 'Bạn không thể xem đơn hàng của người khác',
+        });
+      }
+
       const orders = await listOrdersForUser(sql, user.id, user.role as 'buyer');
       return { orders };
     },
@@ -221,10 +245,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       if (!isUuid(req.params.id)) {
         return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
       }
-      const buyerId = (req.body as { buyerId?: string } | undefined)?.buyerId;
-      if (!buyerId) {
-        return reply.code(400).send({ error: 'BUYER_REQUIRED' });
+      // The buyer is the acting user. The body is not consulted, so a
+      // caller cannot cancel somebody else's order by naming them.
+      const actor = await actorFrom(sql, req);
+      if (!actor) {
+        return reply.code(401).send({ error: 'UNKNOWN_CALLER' });
       }
+      const buyerId = actor.id;
 
       try {
         const result = await cancelOrder(sql, { orderId: req.params.id, buyerId });
@@ -244,6 +271,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
+
+    // A receipt shows what the buyer paid and what the seller earned, so
+    // it belongs to the buyer, the seller and the operator - and to nobody
+    // else. The order id comes from the gateway's redirect, so it is not
+    // a secret.
+    const actor = await actorFrom(sql, req);
+    if (!actor) {
+      return reply.code(401).send({ error: 'UNKNOWN_CALLER' });
+    }
+    const involved =
+      actor.id === order.buyer_id ||
+      actor.id === order.seller_id ||
+      actor.role === 'admin';
+    if (!involved) {
+      return reply.code(403).send({
+        error: 'FORBIDDEN',
+        message: 'Bạn không thể xem đơn hàng của người khác',
+      });
+    }
 
     const fees = computeFees(Number(order.unit_price_vnd), order.quantity);
     const payments = await sql`
@@ -283,6 +329,24 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
+
+    // Same rule as the receipt itself: only the buyer, the seller and the
+    // operator may ask about an order. The re-check can *move money* (it
+    // applies a gateway answer), so it must not be callable by a stranger.
+    const actor = await actorFrom(sql, req);
+    if (!actor) {
+      return reply.code(401).send({ error: 'UNKNOWN_CALLER' });
+    }
+    const involved =
+      actor.id === order.buyer_id ||
+      actor.id === order.seller_id ||
+      actor.role === 'admin';
+    if (!involved) {
+      return reply.code(403).send({
+        error: 'FORBIDDEN',
+        message: 'Bạn không thể kiểm tra đơn hàng của người khác',
+      });
+    }
     const askGateway = req.query.gateway === '1';
 
     // A payment that is still pending can be confirmed late - but so can
@@ -391,8 +455,36 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     );
   };
 
+  /**
+   * The webhook is the only endpoint exposed to the internet, and it is
+   * the one where a flood of requests costs real work: every notification
+   * is verified with an HMAC, written to the reconciliation log and - if
+   * it applies - posted to the ledger inside a database transaction.
+   *
+   * The limit is deliberately generous. VNPay retries a refused
+   * notification up to 10 times, five minutes apart, so a *legitimate*
+   * order can see a burst of notifications over roughly fifty minutes.
+   * The limit has to leave room for that: a limit that is too tight would
+   * reject a real payment, and a rejected payment is a buyer who paid and
+   * got nothing. Two hundred notifications a minute is far above what a
+   * genuine order produces and far below what an attack costs the API.
+   */
+  const ipnLimiter = new RateLimiter({ limit: 200, windowMs: 60_000 });
+
   const handleIpnRequest = async (req: FastifyRequest, reply: FastifyReply) => {
     const payload = readIpnPayload(req);
+
+    // The limiter is keyed on the caller's address. A rejected request
+    // still counts against the budget - otherwise a flood would be free.
+    const limit = ipnLimiter.check(clientIpFrom(req));
+    if (!limit.allowed) {
+      req.log.warn({ ip: clientIpFrom(req) }, 'IPN rate limit exceeded');
+      // The gateway's official code for "invalid request" makes it retry
+      // later. That is the right behaviour here: a throttled notification
+      // must not be lost, and the request will be accepted once the window
+      // has passed.
+      return reply.code(200).send({ RspCode: '99', Message: 'Too many requests' });
+    }
 
     // Always log the raw notification - even the ones we reject. This is
     // the reconciliation log an operator compares against the gateway's
@@ -510,14 +602,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * cancels the orders that were never paid for.
    *
    * Note (brief was silent): the brief says "No authentication needed for
-   * this test task", so there is no auth on this endpoint. The *web* layer
-   * gates the button on the admin role, but the API itself is open - that is
-   * listed in the README under "not production ready".
+   * this test task", so there is no password and no login - the dropdown
+   * picks the acting user. But releasing the escrow moves real money out
+   * of the platform's accounts, so the *role* is enforced here, in the
+   * API, and not only by hiding the button in the storefront.
+   *
+   * The role is read from the database, so the caller cannot claim to be
+   * the operator by putting a name in a header.
    */
   app.post<{ Params: { id: string } }>('/api/events/:id/complete', async (req, reply) => {
     if (!isUuid(req.params.id)) {
       return reply.code(404).send({ error: 'EVENT_NOT_FOUND' });
     }
+    const actor = await requireRole(sql, req, reply, 'admin');
+    if (!actor) return reply;
     try {
       return await releaseEventEscrow(sql, { eventId: req.params.id });
     } catch (err) {
@@ -534,6 +632,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { userId: string } }>('/api/wallet/:userId', async (req, reply) => {
     if (!isUuid(req.params.userId)) {
       return reply.code(404).send({ error: 'USER_NOT_FOUND' });
+    }
+    // A wallet is the user's own money. The operator may look at it (the
+    // dashboard needs the escrow totals); nobody else may.
+    const actor = await actorFrom(sql, req);
+    if (!actor) {
+      return reply.code(401).send({ error: 'UNKNOWN_CALLER' });
+    }
+    if (actor.id !== req.params.userId && actor.role !== 'admin') {
+      return reply.code(403).send({
+        error: 'FORBIDDEN',
+        message: 'Bạn không thể xem ví của người khác',
+      });
     }
     const balances = await getUserBalances(sql, req.params.userId);
     // The transactions are filtered by the *user* in the database, so a
@@ -617,16 +727,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Operations dashboard data.
    *
-   * The brief says no authentication is needed, so the API does not check a
-   * role here - the storefront gates the page on the selected user. The
-   * numbers are all derived from the ledger, so the dashboard can never
+   * The numbers are all derived from the ledger, so the dashboard can never
    * disagree with the books.
+   *
+   * Note (brief was silent): the brief says no authentication is needed, so
+   * there is no password - the dropdown picks the acting user. The *role*
+   * is still checked here: the dashboard shows every buyer's and seller's
+   * money, so it is the operator's data and not the storefront's.
    */
-  app.get('/api/admin/overview', async () => {
+  app.get('/api/admin/overview', async (req, reply) => {
+    const actor = await requireRole(sql, req, reply, 'admin');
+    if (!actor) return reply;
     return await getAdminOverview(sql);
   });
 
-  app.get('/api/admin/orders', async () => {
+  app.get('/api/admin/orders', async (req, reply) => {
+    const actor = await requireRole(sql, req, reply, 'admin');
+    if (!actor) return reply;
     return { orders: await listAllOrders(sql, 100) };
   });
 
@@ -637,11 +754,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * ticket is sold out there is nothing left to test. The operator needs a
    * way to put fresh tickets on sale, and this is that way.
    *
-   * Note (brief was silent): like the other admin endpoints, the API does
-   * not check a role - the storefront gates the page on the selected user.
-   * No money moves here; the ledger is not touched.
+   * Note (brief was silent): like the other admin endpoints, the role is
+   * checked here in the API. No money moves here; the ledger is not touched.
    */
   app.post('/api/admin/events', async (req, reply) => {
+    const actor = await requireRole(sql, req, reply, 'admin');
+    if (!actor) return reply;
     const parsed = createEventSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({
@@ -672,7 +790,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * wrong amount). An operator compares it against the gateway's own
    * transaction list to find notifications that never arrived.
    */
-  app.get('/api/admin/payment-events', async () => {
+  app.get('/api/admin/payment-events', async (req, reply) => {
+    const actor = await requireRole(sql, req, reply, 'admin');
+    if (!actor) return reply;
     const events = await sql`
       SELECT txn_ref, provider_txn_id, signature_valid, applied, payload, received_at
       FROM payment_events

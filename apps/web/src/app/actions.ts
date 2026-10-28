@@ -8,6 +8,19 @@ import { SESSION_COOKIE } from '@/lib/session';
 import { getCurrentUser } from '@/lib/session';
 import { checkoutSchema } from '@tce/shared';
 
+/**
+ * The header that tells the API who is acting.
+ *
+ * The API enforces the role of every mutating endpoint and the ownership of
+ * every wallet and receipt. The identity comes from the session cookie and
+ * the role is looked up in the database by the API itself, so the client
+ * never states a role - it only states which user it is acting as.
+ */
+async function actingUserHeader(): Promise<Record<string, string>> {
+  const user = await getCurrentUser();
+  return user ? { 'x-tce-user-id': user.id } : {};
+}
+
 /** Switches the active user (no real auth in this test task). */
 export async function switchUser(formData: FormData): Promise<void> {
   const userId = String(formData.get('userId') ?? '');
@@ -61,11 +74,11 @@ export async function startCheckout(formData: FormData): Promise<void> {
       // storefront's address and not the buyer's. The payment gateway wants
       // the buyer's address (`vnp_IpAddr`), so it is forwarded here.
       'x-forwarded-for': await clientIp(),
+      ...(await actingUserHeader()),
     },
     body: JSON.stringify({
       listingId: parsed.data.listingId,
       quantity: parsed.data.quantity,
-      buyerId: user.id,
     }),
   });
 
@@ -138,6 +151,7 @@ export async function completeEvent(formData: FormData): Promise<void> {
 
   const res = await fetch(`${API_BASE}/api/events/${eventId}/complete`, {
     method: 'POST',
+    headers: await actingUserHeader(),
   });
   if (res.ok) {
     revalidatePath('/', 'layout');
@@ -165,8 +179,10 @@ export async function cancelOrder(formData: FormData): Promise<void> {
 
   const res = await fetch(`${API_BASE}/api/orders/${orderId}/cancel`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ buyerId: user.id }),
+    headers: {
+      'content-type': 'application/json',
+      ...(await actingUserHeader()),
+    },
   });
 
   if (res.ok) {
@@ -235,7 +251,10 @@ export async function createEvent(
 
   const res = await fetch(`${API_BASE}/api/admin/events`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(await actingUserHeader()),
+    },
     body: JSON.stringify({
       name: String(formData.get('name') ?? ''),
       venue: String(formData.get('venue') ?? ''),

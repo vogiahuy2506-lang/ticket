@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
-import { getCurrentUser, listUsers } from '@/lib/session';
+import { getCurrentUser, listAllUsers } from '@/lib/session';
 import { switchUser } from '@/app/actions';
 import Link from 'next/link';
 
@@ -31,7 +31,7 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [current, users] = await Promise.all([getCurrentUser(), listUsers()]);
+  const [current, users] = await Promise.all([getCurrentUser(), listAllUsers()]);
 
   return (
     <html lang="vi">

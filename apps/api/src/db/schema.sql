@@ -175,6 +175,56 @@ CREATE TRIGGER ledger_transactions_no_update
   BEFORE UPDATE OR DELETE ON ledger_transactions
   FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
 
+-- ---------------------------------------------------------------------
+-- The balance invariant, enforced by the database.
+--
+-- `postTransaction()` checks that debits equal credits before it writes,
+-- so the application can never post an unbalanced entry. But an
+-- application-level check only binds the code that runs it: anybody with
+-- SQL access could still insert a one-sided entry and the journal would
+-- quietly stop adding up. The audit would catch it afterwards, which is
+-- a report, not a guarantee.
+--
+-- So the invariant is also enforced here, as a *deferrable* constraint
+-- trigger. "Deferrable" is what makes it work: the entries of one
+-- transaction are inserted one row at a time, so the totals are only
+-- known once the last row is in. The check therefore runs at COMMIT
+-- rather than after every statement - the transaction is rejected if it
+-- does not balance, and nothing is written.
+--
+-- A transaction with no entries at all is not an error: `ledger_transactions`
+-- is created first and the entries follow. The trigger only fires on a
+-- transaction that has entries, so the "empty" case never reaches it.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION assert_ledger_transaction_balanced() RETURNS trigger AS $$
+DECLARE
+  debit_total  BIGINT;
+  credit_total BIGINT;
+BEGIN
+  SELECT
+    COALESCE(SUM(CASE WHEN direction = 'debit'  THEN amount_vnd END), 0),
+    COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount_vnd END), 0)
+  INTO debit_total, credit_total
+  FROM ledger_entries
+  WHERE txn_id = NEW.txn_id;
+
+  IF debit_total <> credit_total THEN
+    RAISE EXCEPTION
+      'unbalanced ledger transaction %: debit % <> credit %',
+      NEW.txn_id, debit_total, credit_total
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS ledger_entries_balanced ON ledger_entries;
+CREATE CONSTRAINT TRIGGER ledger_entries_balanced
+  AFTER INSERT ON ledger_entries
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION assert_ledger_transaction_balanced();
+
 -- The same rule for the gateway notifications: they are evidence of what
 -- the gateway told us and must not be rewritten either.
 DROP TRIGGER IF EXISTS payments_no_update ON payments;

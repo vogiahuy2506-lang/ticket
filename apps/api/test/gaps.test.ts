@@ -4,6 +4,7 @@ import { listTransactionsForUser } from '../src/services/ledger.js';
 import { canQueryGateway, decideQueryOutcome, handleIpn } from '../src/services/orders.js';
 import { createIsolatedDb, isDatabaseReachable, useIsolatedDb, type IsolatedDb } from './helpers/db.js';
 import { TestData } from './helpers/fixtures.js';
+import { asUser } from './helpers/acting-user.js';
 
 /**
  * The API surface the demo does not exercise on every click.
@@ -53,11 +54,15 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     await db?.drop();
   });
 
+  /**
+   * The API asks who is acting: the role is looked up in the database, so
+   * the request only carries the id of the user it acts as.
+   */
   async function checkout(buyerId: string, listingId: string) {
     const res = await fetch(`${base}/api/checkout`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ listingId, quantity: 1, buyerId }),
+      headers: { 'content-type': 'application/json', ...asUser(buyerId) },
+      body: JSON.stringify({ listingId, quantity: 1 }),
     });
     expect(res.status).toBe(200);
     return (await res.json()) as { orderId: string; grossVnd: number; gatewayRef: string };
@@ -180,6 +185,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
 
     const recheck = await fetch(`${base}/api/orders/${order.orderId}/recheck`, {
       method: 'POST',
+      headers: asUser(fx.buyer.id),
     });
     expect(recheck.status).toBe(200);
     const body = (await recheck.json()) as { status: string };
@@ -195,6 +201,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
 
     const recheck = await fetch(`${base}/api/orders/${order.orderId}/recheck`, {
       method: 'POST',
+      headers: asUser(fx.buyer.id),
     });
     const body = (await recheck.json()) as { status: string };
     expect(body.status).toBe('PAID');
@@ -284,9 +291,10 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     // The service reports an unknown event as an `OrderError` with the
     // code 404. The route has to translate it - otherwise the buyer (or
     // the operator) gets a 500 for a typo.
+    const operator = await data.user('Operator unknown-event', 'admin');
     const res = await fetch(
       `${base}/api/events/00000000-0000-0000-0000-000000000000/complete`,
-      { method: 'POST' },
+      { method: 'POST', headers: asUser(operator.id) },
     );
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
@@ -302,7 +310,9 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     const mine = await checkout(fx.buyer.id, fx.listing.id);
     await checkout(other.buyer.id, other.listing.id);
 
-    const res = await fetch(`${base}/api/orders?userId=${fx.buyer.id}`);
+    const res = await fetch(`${base}/api/orders?userId=${fx.buyer.id}`, {
+      headers: asUser(fx.buyer.id),
+    });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       orders: Array<{ id: string; status: string; eventName: string }>;
@@ -319,11 +329,15 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     const fx = await data.fixture('orders-role');
     const order = await checkout(fx.buyer.id, fx.listing.id);
 
-    const asBuyer = await fetch(`${base}/api/orders?userId=${fx.buyer.id}`);
+    const asBuyer = await fetch(`${base}/api/orders?userId=${fx.buyer.id}`, {
+      headers: asUser(fx.buyer.id),
+    });
     const buyerBody = (await asBuyer.json()) as { orders: Array<{ id: string }> };
     expect(buyerBody.orders.map((o) => o.id)).toContain(order.orderId);
 
-    const asSeller = await fetch(`${base}/api/orders?userId=${fx.seller.id}`);
+    const asSeller = await fetch(`${base}/api/orders?userId=${fx.seller.id}`, {
+      headers: asUser(fx.seller.id),
+    });
     const sellerBody = (await asSeller.json()) as { orders: Array<{ id: string }> };
     expect(sellerBody.orders.map((o) => o.id)).toContain(order.orderId);
   });
@@ -348,7 +362,9 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     });
     const theirSale = await checkout(buyer3.id, ownListing.id);
 
-    const res = await fetch(`${base}/api/orders?userId=${fx.seller.id}`);
+    const res = await fetch(`${base}/api/orders?userId=${fx.seller.id}`, {
+      headers: asUser(fx.seller.id),
+    });
     const body = (await res.json()) as { orders: Array<{ id: string }> };
     const ids = body.orders.map((o) => o.id);
 
@@ -361,12 +377,14 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
   });
 
   it('refuses an order list without a user, or for an unknown one', async () => {
-    const missing = await fetch(`${base}/api/orders`);
+    const someone = await data.user('Buyer orders-list-missing', 'buyer');
+    const missing = await fetch(`${base}/api/orders`, { headers: asUser(someone.id) });
     expect(missing.status).toBe(400);
     expect(((await missing.json()) as { error: string }).error).toBe('USER_ID_REQUIRED');
 
     const unknown = await fetch(
       `${base}/api/orders?userId=00000000-0000-0000-0000-000000000000`,
+      { headers: asUser(someone.id) },
     );
     expect(unknown.status).toBe(404);
     expect(((await unknown.json()) as { error: string }).error).toBe('USER_NOT_FOUND');
@@ -382,8 +400,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
 
     const res = await fetch(`${base}/api/orders/${order.orderId}/cancel`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ buyerId: fx.buyer.id }),
+      headers: { 'content-type': 'application/json', ...asUser(fx.buyer.id) },
     });
     expect(res.status).toBe(200);
     expect(await data.orderStatus(order.orderId)).toBe('CANCELLED');
@@ -398,8 +415,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     // Not the buyer's order.
     const foreign = await fetch(`${base}/api/orders/${order.orderId}/cancel`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ buyerId: fx.seller.id }),
+      headers: { 'content-type': 'application/json', ...asUser(fx.seller.id) },
     });
     expect(foreign.status).toBe(403);
 
@@ -408,8 +424,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     await db.sql`UPDATE orders SET status = 'PAID' WHERE id = ${order.orderId}`;
     const settled = await fetch(`${base}/api/orders/${order.orderId}/cancel`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ buyerId: fx.buyer.id }),
+      headers: { 'content-type': 'application/json', ...asUser(fx.buyer.id) },
     });
     expect(settled.status).toBe(409);
     expect(await data.orderStatus(order.orderId)).toBe('PAID');
@@ -439,7 +454,11 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
       raw: {},
     });
 
-    const res = await fetch(`${base}/api/admin/overview`);
+    // The dashboard is the operator's data.
+    const operator = await data.user('Operator refund-orders', 'admin');
+    const res = await fetch(`${base}/api/admin/overview`, {
+      headers: asUser(operator.id),
+    });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       refundPayableVnd: number;
@@ -491,6 +510,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     // The buyer presses "check the status again": the app asks the
     // gateway, and the money is booked.
     const recheck = await fetch(`${base}/api/orders/${order.orderId}/recheck?gateway=1`, {
+      headers: asUser(fx.buyer.id),
       method: 'POST',
     });
     expect(recheck.status).toBe(200);
@@ -522,6 +542,7 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     const order = await checkout(fx.buyer.id, fx.listing.id);
 
     const recheck = await fetch(`${base}/api/orders/${order.orderId}/recheck?gateway=1`, {
+      headers: asUser(fx.buyer.id),
       method: 'POST',
     });
     expect(recheck.status).toBe(200);
@@ -538,6 +559,10 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     // route reported a 500 - so a bad URL looked like a broken server.
     const badIds = ['8f2a1b3c', 'not-a-uuid', '123', ''];
 
+    // The acting user is the operator, so the 404 comes from the id check
+    // and not from an authorisation refusal.
+    const operator = await data.user('Operator bad-ids', 'admin');
+
     for (const badId of badIds) {
       const cases: Array<[string, RequestInit?]> = [
         [`${base}/api/orders/${badId}`, undefined],
@@ -549,7 +574,10 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
       ];
 
       for (const [url, init] of cases) {
-        const res = await fetch(url, init);
+        const res = await fetch(url, {
+          ...init,
+          headers: { ...asUser(operator.id), ...(init?.headers ?? {}) },
+        });
         expect(
           res.status,
           `${url} answered ${res.status}, expected 404`,

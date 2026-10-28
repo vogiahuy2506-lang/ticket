@@ -186,4 +186,67 @@ describe.skipIf(!dbAvailable)('money invariants', () => {
     // Every dong the buyers paid is accounted for.
     expect(expectedCash).toBe(expectedSellerTotal + expectedFee);
   });
+
+  it('refuses an unbalanced ledger transaction at the database level', async () => {
+    // The application checks that debits equal credits before it posts.
+    // This test is about the layer *below* that: somebody with SQL access
+    // must not be able to write a one-sided entry either.
+    //
+    // The check is a deferrable constraint trigger, so it fires at COMMIT
+    // - the entries of a transaction are inserted one row at a time, and
+    // the totals are only known once the last row is in.
+    const cash = await db.sql<{ id: string }[]>`
+      SELECT id FROM ledger_accounts WHERE code = 'asset:gateway_cash' LIMIT 1
+    `;
+
+    await expect(
+      db.sql.begin(async (tx) => {
+        const txn = await tx<{ id: string }[]>`
+          INSERT INTO ledger_transactions (ref_type, memo)
+          VALUES ('MANUAL_UNBALANCED', 'invariant test: debit without credit')
+          RETURNING id
+        `;
+        await tx`
+          INSERT INTO ledger_entries (txn_id, account_id, direction, amount_vnd)
+          VALUES (${txn[0]!.id}, ${cash[0]!.id}, 'debit', 999999)
+        `;
+        // COMMIT is where the deferred trigger runs - the transaction is
+        // rejected here and nothing is written.
+      }),
+    ).rejects.toThrow(/unbalanced ledger transaction/);
+
+    // The rejected transaction left nothing behind.
+    const leftovers = await db.sql`
+      SELECT count(*)::int AS n FROM ledger_transactions WHERE memo = 'invariant test: debit without credit'
+    `;
+    expect(leftovers[0]!.n).toBe(0);
+  });
+
+  it('accepts a balanced ledger transaction written by hand', async () => {
+    // The other half of the rule: the trigger must not reject a correct
+    // posting, or the escrow would stop working.
+    const cash = await db.sql<{ id: string }[]>`
+      SELECT id FROM ledger_accounts WHERE code = 'asset:gateway_cash' LIMIT 1
+    `;
+    const fee = await db.sql<{ id: string }[]>`
+      SELECT id FROM ledger_accounts WHERE code = 'revenue:platform_fee' LIMIT 1
+    `;
+
+    await db.sql.begin(async (tx) => {
+      const txn = await tx<{ id: string }[]>`
+        INSERT INTO ledger_transactions (ref_type, memo)
+        VALUES ('MANUAL_BALANCED', 'invariant test: a balanced manual posting')
+        RETURNING id
+      `;
+      await tx`
+        INSERT INTO ledger_entries (txn_id, account_id, direction, amount_vnd)
+        VALUES
+          (${txn[0]!.id}, ${cash[0]!.id}, 'debit', 500000),
+          (${txn[0]!.id}, ${fee[0]!.id}, 'credit', 500000)
+      `;
+    });
+
+    const audit = await auditLedger(db.sql);
+    expect(audit.ok).toBe(true);
+  });
 });

@@ -14,10 +14,6 @@ double-entry ledger.
 > walkthrough: what to click, what to expect, and the SQL that proves each
 > claim - mapped one-to-one onto the brief.
 >
-> **Reviewing the code?** [`REVIEW-QUESTIONS.md`](./REVIEW-QUESTIONS.md) is the
-> list of questions a hard reviewer would ask - and the answers, with the
-> exact file and line for each claim. It names the weak points honestly
-> instead of only listing what works.
 
 ---
 
@@ -642,6 +638,37 @@ the history stays auditable. `GET /api/ledger/integrity` proves it by
 attempting the mutation inside a rolled-back transaction and reporting
 whether the database refused it.
 
+### The balance invariant is enforced by the database, not only by the app
+
+`postTransaction()` refuses to write a transaction whose debits do not equal
+its credits. That check binds the code that runs it - anybody with SQL
+access could still insert a one-sided entry, and the journal would quietly
+stop adding up. The audit would catch it afterwards, which is a report, not
+a guarantee.
+
+So the same invariant is also a **deferrable constraint trigger**:
+
+```sql
+CREATE CONSTRAINT TRIGGER ledger_entries_balanced
+  AFTER INSERT ON ledger_entries
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION assert_ledger_transaction_balanced();
+```
+
+*Deferrable* is what makes it work. The entries of one transaction are
+inserted one row at a time, so the totals are only known once the last row
+is in - the check therefore runs at `COMMIT` rather than after every
+statement. The transaction is rejected if it does not balance, and nothing
+is written.
+
+```
+ERROR:  unbalanced ledger transaction 92b0a950-...: debit 999999 <> credit 0
+```
+
+A test in `test/invariants.test.ts` posts a one-sided entry by hand and
+asserts that the database refuses it, and posts a balanced one and asserts
+that it is accepted.
+
 ### Order lifecycle
 
 ```
@@ -981,8 +1008,11 @@ scripts/
     drives the domain logic, and the operator-only action ("complete event"
     = release escrow) is gated on `admin` both in the UI *and* in the server
     action - hiding a button is not enough, because a Next.js server action
-    is an HTTP endpoint. This is presentation-level authorization only:
-    anyone can pick "Ops Admin" in the dropdown. Adding a real session later
+    is an HTTP endpoint. The role is *also* checked in the API: the escrow
+    release, the dashboard, the event creation and the raw IPN log require
+    the `admin` role, and a wallet or a receipt can only be read by its
+    owner (or the operator). What is missing is a proof of identity -
+    anyone can still pick "Ops Admin" in the dropdown. Adding a real session
     means replacing the source of `getCurrentUser()`, nothing else.
 14. **Anyone can buy, not only the `buyer` role.** In a real marketplace a
     seller is very often a buyer too. Forcing one role per user would need
@@ -990,7 +1020,12 @@ scripts/
 15. **The ledger is append-only at the database level**, enforced by a
     trigger rather than by convention. Corrections go through a reversing
     transaction, so the audit trail is preserved.
-16. **Checkout takes an `Idempotency-Key`**, and a completed event rejects
+16. **The balance invariant is a deferrable constraint trigger.** The
+    application already refuses an unbalanced posting, but the check was
+    repeated in the database so that a direct `INSERT` cannot break the
+    books either. It is *deferrable* because the entries of a transaction
+    are inserted one row at a time - the totals are only known at `COMMIT`.
+17. **Checkout takes an `Idempotency-Key`**, and a completed event rejects
     new checkouts. Both are about not trapping money: the first prevents a
     double-tap from creating two orders, the second prevents an order that
     could never be released from escrow.
@@ -1074,19 +1109,29 @@ scripts/
 
 Honest list:
 
-- **No authentication or authorization.** The user switcher is open to
-  anyone, and the API endpoint behind "complete event" is not protected -
-  the *web* layer checks the admin role, but anyone who can reach the API
-  can call it. Production needs real sessions and a role check on every
-  mutating endpoint.
+- **No authentication - only authorization.** There is still no login: the
+  brief allows a dropdown, so the acting user is picked from a list. But
+  the *role* is enforced by the API, not only by the storefront: the
+  escrow release, the dashboard, the event creation and the raw IPN log
+  check the role, and a wallet or a receipt can only be read by the owner
+  (or the operator). The role is looked up in the database, so a caller
+  cannot claim it by putting a name in a header. What is missing is a
+  *proof of identity*: anybody can still pick "Ops Admin" in the dropdown.
+  Production needs real sessions and a password (or a magic link).
 - **The mock gateway** must be switched off; it accepts any payment.
 - **IPN replay protection is partial.** The unique constraints make the
   *effect* of a replay idempotent, but there is no timestamp/nonce window
   rejecting a stale notification. The `querydr` fallback covers the case of
   a *lost* IPN (the buyer paid, the notification never arrived), but a
   notification that arrives hours later is still applied.
-- **IPN secrets are not rotated**, and there is no rate limiting on the
-  webhook.
+  A timestamp window would be the obvious fix, and it was deliberately
+  *not* used: VNPay retries a refused notification up to ten times, five
+  minutes apart, so a window short enough to reject a stale notification
+  would also reject a legitimate retry - and a rejected payment is a buyer
+  who paid and got nothing. The webhook is rate limited instead (200
+  notifications a minute per address), which bounds the cost without ever
+  refusing a real payment.
+- **IPN secrets are not rotated.**
 - **No refunds.** The `REFUNDED` payment status exists in the schema but no
   flow produces it. A refund would need a reverse posting and a rule for
   who eats the gateway fee. The late-payment path books the liability
@@ -1110,6 +1155,12 @@ Honest list:
 - **The ledger is append-only, but not tamper-evident.** The trigger stops
   `UPDATE`/`DELETE`, but there is no hash chain, so an operator with direct
   database access could still rewrite history by dropping the trigger.
+  The *balance* invariant is stronger than that: it is a constraint trigger,
+  so it holds even against a direct `INSERT` - but it is a trigger too, and
+  a determined operator can drop any trigger.
+- **The rate limiter is in memory.** It is per process and does not survive
+  a restart, so running several API instances would multiply the limit.
+  A real deployment would keep the counter in a shared store.
 - **No audit log** for who did what (who completed an event, who switched
   user).
 - **No observability**: no structured logging pipeline, no metrics, no
@@ -1148,8 +1199,9 @@ REMOTE_REPO=your-account/your-repo ./scripts/push-to-github.sh
 
 ### What I would do next, in order
 
-1. Real auth (session + role) and lock the mutation endpoints, including
-   the API ones - right now the role check only exists in the web layer.
+1. Real auth: a password (or a magic link) instead of the dropdown. The
+   *role* check is already in the API, so this is the last piece - and
+   replacing `getCurrentUser()` is all it takes.
 2. A background job that asks the gateway (`querydr`) about pending and
    expired orders, so a lost notification is recovered without waiting
    for the buyer to open the order page - and a re-test of `querydr`
@@ -1410,6 +1462,7 @@ and still be safe.
 | `test/invariants.test.ts` | the money invariants over a wide grid of prices and quantities, and a long run of buy-pay-release cycles that must end perfectly solvent |
 | `test/legacy-text.test.ts` | the repair of names and account labels that an older version wrote without Vietnamese diacritics |
 | `test/create-event.test.ts` | creating a new event: the local start time is stored with the +07:00 offset, a listing must belong to a real seller, and no money moves |
+| `test/rate-limit.test.ts` | the limiter on the webhook: the budget is counted per client, a refused request still counts, and a legitimate burst is never refused |
 
 Two of these tests found real bugs while they were being written (see
 section 8).

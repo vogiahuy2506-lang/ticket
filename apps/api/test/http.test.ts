@@ -3,6 +3,7 @@ import { buildServer } from '../src/server.js';
 import { signVnParams } from '../src/payments/vnpay-crypto.js';
 import { createIsolatedDb, isDatabaseReachable, useIsolatedDb, type IsolatedDb } from './helpers/db.js';
 import { TestData } from './helpers/fixtures.js';
+import { asUser } from './helpers/acting-user.js';
 
 /**
  * The HTTP surface, tested against a real database and a real server.
@@ -39,17 +40,33 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     await db?.drop();
   });
 
+  /**
+   * The API asks who is acting: the role is looked up in the database, so
+   * a request only carries the id of the user it acts as.
+   *
+   * `acting` defaults to the buyer of the fixture a test creates, because
+   * that is who most of these requests are. A test that is about the
+   * *refusal* of an unauthorised call passes a different id (or none).
+   */
+  let acting: string | undefined;
+
   async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
     const res = await fetch(`${base}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
+      headers: {
+        'content-type': 'application/json',
+        ...(acting ? asUser(acting) : {}),
+        ...headers,
+      },
       body: JSON.stringify(body),
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   }
 
-  async function get(path: string) {
-    const res = await fetch(`${base}${path}`);
+  async function get(path: string, headers: Record<string, string> = {}) {
+    const res = await fetch(`${base}${path}`, {
+      headers: { ...(acting ? asUser(acting) : {}), ...headers },
+    });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   }
 
@@ -68,6 +85,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('rejects a checkout with a quantity of zero', async () => {
     const fx = await data.fixture('http-zero-qty');
+    acting = fx.buyer.id;
     const res = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 0,
@@ -76,15 +94,21 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects a checkout without a buyer', async () => {
+  it('rejects a checkout without an acting user', async () => {
+    // The buyer is the acting user, taken from the session - so a request
+    // that does not say who it is cannot buy anything. The body is not
+    // consulted any more: a caller cannot buy as somebody else by editing
+    // a request body.
     const fx = await data.fixture('http-no-buyer');
+    acting = undefined;
     const res = await post('/api/checkout', { listingId: fx.listing.id, quantity: 1 });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('BUYER_REQUIRED');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('UNKNOWN_CALLER');
   });
 
   it('returns 404 for a checkout on an unknown listing', async () => {
     const fx = await data.fixture('http-unknown-listing');
+    acting = fx.buyer.id;
     const res = await post('/api/checkout', {
       listingId: '00000000-0000-0000-0000-000000000000',
       quantity: 1,
@@ -96,10 +120,12 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('returns 409 when a seller buys their own ticket', async () => {
     const fx = await data.fixture('http-own');
+    // The seller acts as themselves - the body cannot name a different
+    // buyer any more.
+    acting = fx.seller.id;
     const res = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
-      buyerId: fx.seller.id,
     });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('OWN_LISTING');
@@ -107,6 +133,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('returns 409 when there are not enough tickets left', async () => {
     const fx = await data.fixture('http-soldout');
+    acting = fx.buyer.id;
     const last = await data.listing(fx.eventId, fx.seller.id, {
       title: 'Only one',
       quantityTotal: 1,
@@ -123,6 +150,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('returns the same order for a repeated Idempotency-Key', async () => {
     const fx = await data.fixture('http-idem');
+    acting = fx.buyer.id;
     const headers = { 'idempotency-key': 'http-idem-1' };
     const body = { listingId: fx.listing.id, quantity: 1, buyerId: fx.buyer.id };
 
@@ -139,6 +167,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('rejects an IPN with a bad signature and books nothing', async () => {
     const fx = await data.fixture('http-bad-signature');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -179,6 +208,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('rejects an IPN whose amount does not match the order', async () => {
     const fx = await data.fixture('http-amount-mismatch');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -219,6 +249,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('accepts a valid IPN and books the payment', async () => {
     const fx = await data.fixture('http-happy');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -245,6 +276,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('answers a replayed IPN with RspCode 02 and books it once', async () => {
     const fx = await data.fixture('http-replay');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -281,6 +313,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
   it('accepts a valid IPN sent as a POST as well', async () => {
     // VNPay notifies with a GET, but the endpoint accepts both.
     const fx = await data.fixture('http-post');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -319,6 +352,10 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
       }).toString()}`,
     );
 
+    // The raw notification log is the operator's data.
+    const operator = await data.user('Operator http-logged', 'admin');
+    acting = operator.id;
+
     const res = await get('/api/admin/payment-events');
     const events = res.body.events as Array<{
       txn_ref: string | null;
@@ -340,6 +377,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     // the script throws on the button click and the payment silently
     // never completes - the buyer stays on the payment page forever.
     const fx = await data.fixture('http-mock-pay');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -382,6 +420,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     // payment page, the page signs an IPN and posts it to the app, and
     // the order ends up PAID with the money in the seller's escrow.
     const fx = await data.fixture('http-mock-pay-flow');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -445,6 +484,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('returns the order status and the payments behind it', async () => {
     const fx = await data.fixture('http-order-status');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 2,
@@ -469,6 +509,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('shows the tickets that are still available on a listing', async () => {
     const fx = await data.fixture('http-availability');
+    acting = fx.buyer.id;
     await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 3,
@@ -488,6 +529,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('releases the escrow when the event is completed', async () => {
     const fx = await data.fixture('http-release');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 1,
@@ -506,6 +548,10 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
       })}`,
     );
 
+    // Releasing the escrow is an operator action.
+    const operator = await data.user('Operator http-release', 'admin');
+    acting = operator.id;
+
     const res = await post(`/api/events/${fx.eventId}/complete`, {});
     expect(res.status).toBe(200);
     expect(res.body.released).toBe(1);
@@ -518,6 +564,7 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
 
   it('cancels the unpaid orders when the event is completed', async () => {
     const fx = await data.fixture('http-cancel');
+    acting = fx.buyer.id;
     const checkout = await post('/api/checkout', {
       listingId: fx.listing.id,
       quantity: 2,
@@ -525,11 +572,101 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     });
     const orderId = checkout.body.orderId as string;
 
+    const operator = await data.user('Operator http-cancel', 'admin');
+    acting = operator.id;
+
     const res = await post(`/api/events/${fx.eventId}/complete`, {});
     expect(res.body.cancelled).toBe(1);
     expect(await data.orderStatus(orderId)).toBe('CANCELLED');
     // The tickets went back on sale.
     expect(await data.quantitySold(fx.listing.id)).toBe(0);
+  });
+
+  // ---------------------------------------------------------- authorization
+
+  it('refuses to release the escrow for a caller who is not the operator', async () => {
+    // This is the endpoint that moves money out of escrow, so it has to
+    // check the role in the API - not only in the storefront. A buyer who
+    // calls it directly gets a 403 and the escrow stays where it is.
+    const fx = await data.fixture('http-release-forbidden');
+    acting = fx.buyer.id;
+    const checkout = await post('/api/checkout', {
+      listingId: fx.listing.id,
+      quantity: 1,
+    });
+    const orderId = checkout.body.orderId as string;
+    const gross = checkout.body.grossVnd as number;
+
+    // Pay it, so there is an escrow to release.
+    const params = {
+      vnp_TxnRef: orderId,
+      vnp_TransactionNo: 'HTTP-FORBIDDEN-RELEASE',
+      vnp_Amount: String(gross * WIRE_AMOUNT_FACTOR),
+      vnp_ResponseCode: '00',
+      vnp_TransactionStatus: '00',
+    };
+    await fetch(`${base}/api/ipn/vnpay?${new URLSearchParams({
+      ...params,
+      vnp_SecureHash: signVnParams(params, SECRET),
+    }).toString()}`);
+    expect(await data.orderStatus(orderId)).toBe('PAID');
+
+    // The buyer tries to release it.
+    const forbidden = await post(`/api/events/${fx.eventId}/complete`, {});
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error).toBe('FORBIDDEN');
+
+    // The money did not move.
+    expect(await data.orderStatus(orderId)).toBe('PAID');
+    expect(await data.balance(`liability:user:${fx.seller.id}:pending`)).toBe(950_000);
+    expect(await data.balance(`liability:user:${fx.seller.id}:available`)).toBe(0);
+  });
+
+  it('refuses a request that does not say who it is', async () => {
+    const fx = await data.fixture('http-unknown-caller');
+    acting = undefined;
+    const res = await post('/api/checkout', {
+      listingId: fx.listing.id,
+      quantity: 1,
+    });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('UNKNOWN_CALLER');
+  });
+
+  it('refuses to read another user\'s wallet', async () => {
+    const fx = await data.fixture('http-wallet-forbidden');
+    acting = fx.buyer.id;
+    const res = await get(`/api/wallet/${fx.seller.id}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('FORBIDDEN');
+  });
+
+  it('refuses to read another user\'s orders', async () => {
+    const fx = await data.fixture('http-orders-forbidden');
+    acting = fx.buyer.id;
+    const res = await get(`/api/orders?userId=${fx.seller.id}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('FORBIDDEN');
+  });
+
+  it('ignores a buyer id in the body - the acting user is the buyer', async () => {
+    // The body must not be able to name a different buyer.
+    const fx = await data.fixture('http-body-buyer-ignored');
+    const other = await data.fixture('http-body-buyer-ignored-other');
+    acting = fx.buyer.id;
+
+    const res = await post('/api/checkout', {
+      listingId: fx.listing.id,
+      quantity: 1,
+      buyerId: other.buyer.id,
+    });
+    expect(res.status).toBe(200);
+
+    // The order belongs to the acting user, not to the one in the body.
+    const order = await db.sql<{ buyer_id: string }[]>`
+      SELECT buyer_id FROM orders WHERE id = ${res.body.orderId}
+    `;
+    expect(order[0]!.buyer_id).toBe(fx.buyer.id);
   });
 
   // ----------------------------------------------------------------- ledger
