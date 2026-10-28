@@ -135,6 +135,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         // storefront, so `req.ip` is the storefront's address. The
         // storefront forwards the real one in `x-forwarded-for`.
         clientIp: clientIpFrom(req),
+        // `querydr` has to send this date back later, so it is the order's.
+        createdAt: new Date(order.created_at),
         returnUrl: `${config.webBaseUrl}/orders/${order.id}`,
         notifyUrl: `${config.publicBaseUrl}/api/ipn/vnpay`,
       });
@@ -246,10 +248,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * The gateway's answer is only applied if it is correctly signed and the
    * amount matches the order. If the gateway cannot be reached, the re-check
    * simply reports the persisted status and nothing else happens.
+   *
+   * The gateway is only asked when the caller says so (`?gateway=1`): the
+   * order page polls this endpoint every few seconds, and a poll that
+   * called `querydr` each time would hit the gateway for as long as the
+   * page stays open. The page asks once when it opens and when the buyer
+   * presses the button; the polls only read the database.
    */
-  app.post<{ Params: { id: string } }>('/api/orders/:id/recheck', async (req, reply) => {
+  type RecheckRoute = { Params: { id: string }; Querystring: { gateway?: string } };
+  app.post<RecheckRoute>('/api/orders/:id/recheck', async (req, reply) => {
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
+    const askGateway = req.query.gateway === '1';
 
     // A payment that is still pending can be confirmed late - but so can
     // one that has already been marked EXPIRED by the lazy sweep. The
@@ -262,9 +272,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // The orders that must *not* be re-checked are the settled ones
     // (PAID, RELEASED, FAILED, CANCELLED, REFUND_REQUIRED): their money is
     // already booked, and a gateway answer would only duplicate it.
-    if (canQueryGateway(order.status) && order.gateway_ref) {
+    if (askGateway && canQueryGateway(order.status) && order.gateway_ref) {
       const provider = providerFor(deps);
-      const queried = await provider.queryTransaction?.(order.gateway_ref);
+      const queried = await provider.queryTransaction?.({
+        gatewayRef: order.gateway_ref,
+        createdAt: new Date(order.created_at),
+      });
       if (queried) {
         // The decision is made by a pure function, so the rule can be
         // tested without a gateway. Only a *success* that the gateway
@@ -274,7 +287,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         const outcome = decideQueryOutcome(queried, Number(order.gross_vnd));
         if (outcome.action === 'skip') {
           req.log.info(
-            { orderId: order.id, code: queried.code, reason: outcome.reason },
+            {
+              orderId: order.id,
+              code: queried.code,
+              message: queried.message,
+              reason: outcome.reason,
+            },
             'the re-check did not apply the gateway answer',
           );
         } else {
@@ -415,8 +433,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     // The handler can refuse the notification - a race with another
     // notification, for instance. The gateway is told with the official
-    // code (`99`, "invalid request") and keeps no retry loop open for a
-    // request we could not apply. The order is *not* silently changed.
+    // code (`99`, "invalid request"), which makes it retry (up to 10 times,
+    // 5 minutes apart), so a refusal caused by a transient race gets
+    // another chance. The order is *not* silently changed.
     let result;
     try {
       result = await handleIpn(sql, {

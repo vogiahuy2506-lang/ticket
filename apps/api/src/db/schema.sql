@@ -76,11 +76,13 @@ CREATE INDEX IF NOT EXISTS orders_status_idx ON orders(status);
 --     successful rows only makes a *second real payment* for the same
 --     gateway transaction impossible.
 --
--- The split matters because VNPay sends `vnp_TransactionNo = "0"` for a
--- cancelled transaction (response code 24). A single global unique
--- constraint on (provider, provider_txn_id) would then make the second
--- cancelled order collide with the first one, and the notification would
--- be silently treated as a replay.
+-- The split is defensive. The documentation only says `vnp_TransactionNo`
+-- is VNPay's transaction number; it does not say what a cancelled
+-- transaction (response code 24) carries. If it is a shared placeholder
+-- such as "0", a single global unique constraint on
+-- (provider, provider_txn_id) would make the second cancelled order
+-- collide with the first one, and the notification would be silently
+-- treated as a replay. To confirm against the sandbox.
 CREATE TABLE IF NOT EXISTS payments (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id          UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -251,8 +253,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS orders_gateway_ref_uniq
 -- The idempotency constraint on `payments` becomes per order.
 --
 -- The old constraint was UNIQUE (provider, provider_txn_id). That works
--- for a replay of the same notification, but VNPay sends
--- `vnp_TransactionNo = "0"` for a cancelled transaction, so the second
+-- for a replay of the same notification, but if VNPay sends a shared
+-- placeholder (such as "0") for a cancelled transaction, the second
 -- cancelled order would collide with the first one and its notification
 -- would be treated as a replay. The replay is now scoped to the order,
 -- and a *successful* transaction number stays globally unique.

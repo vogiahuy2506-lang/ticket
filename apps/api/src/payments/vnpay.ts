@@ -3,18 +3,21 @@ import { toVnSafeText } from '@tce/shared';
 import {
   buildHashData,
   encodeVnValue,
+  sameSignature,
   signVnParams,
+  signVnPipe,
   sortVnParams,
 } from './vnpay-crypto.js';
 import type {
   CreatePaymentInput,
   CreatePaymentResult,
   PaymentProvider,
+  QueryTransactionInput,
   VerifyResult,
 } from './provider.js';
 
 /**
- * VNPay sandbox integration (https://sandbox.vnpay.vn).
+ * VNPay sandbox integration (https://sandbox.vnpayment.vn).
  *
  * Why VNPay (documented in the README):
  *  - the ticket price is in VND, and VNPay settles in VND, so there is no
@@ -59,7 +62,6 @@ export interface VnPayConfig {
   vnpayApiUrl: string;
   merchantCode: string;
   secretKey: string;
-  returnUrl: string;
   /**
    * The IPN endpoint, kept here only so it can be *shown* to the operator
    * and registered in the merchant portal. It is deliberately NOT sent to
@@ -100,6 +102,48 @@ export const VNPAY_AMOUNT_MAX_VND = Math.floor(VNPAY_AMOUNT_MAX_WIRE / VNPAY_AMO
  */
 export const VNPAY_QUERY_TIMEOUT_MS = 10_000;
 
+/**
+ * The values a `querydr` request signs, in the order the documentation
+ * joins them with `|`
+ * (https://sandbox.vnpayment.vn/apis/docs/truy-van-hoan-tien/querydr&refund.html).
+ */
+export const QUERYDR_REQUEST_HASH_FIELDS = [
+  'vnp_RequestId',
+  'vnp_Version',
+  'vnp_Command',
+  'vnp_TmnCode',
+  'vnp_TxnRef',
+  'vnp_TransactionDate',
+  'vnp_CreateDate',
+  'vnp_IpAddr',
+  'vnp_OrderInfo',
+] as const;
+
+/** The values a `querydr` response signs, in the documented order. */
+export const QUERYDR_RESPONSE_HASH_FIELDS = [
+  'vnp_ResponseId',
+  'vnp_Command',
+  'vnp_ResponseCode',
+  'vnp_Message',
+  'vnp_TmnCode',
+  'vnp_TxnRef',
+  'vnp_Amount',
+  'vnp_BankCode',
+  'vnp_PayDate',
+  'vnp_TransactionNo',
+  'vnp_TransactionType',
+  'vnp_TransactionStatus',
+  'vnp_OrderInfo',
+  'vnp_PromotionCode',
+  'vnp_PromotionAmount',
+] as const;
+
+/**
+ * `vnp_IpAddr` of a `querydr` request is the address of the *server* that
+ * calls the API, not the buyer's.
+ */
+const QUERYDR_SERVER_IP = '127.0.0.1';
+
 /** The official sample uses `yyyyMMddHHmmss` in the GMT+7 timezone. */
 export function formatVnTime(date: Date): string {
   const shifted = new Date(date.getTime() + 7 * 60 * 60 * 1000);
@@ -138,11 +182,22 @@ export function verifySignature(
 ): boolean {
   const { vnp_SecureHash, vnp_SecureHashType, ...rest } = params;
   if (!vnp_SecureHash) return false;
-  const expected = buildSignMessage(rest, secretKey);
-  const a = Buffer.from(expected, 'utf8');
-  const b = Buffer.from(vnp_SecureHash, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+  return sameSignature(buildSignMessage(rest, secretKey), vnp_SecureHash);
+}
+
+/**
+ * Verifies the checksum of a `querydr` response. It is the `|`-joined
+ * field list, not the sorted `key=value` list an IPN is signed with, so
+ * `verifySignature` would reject every genuine answer.
+ */
+export function verifyQueryResponse(
+  payload: Record<string, unknown>,
+  secretKey: string,
+): boolean {
+  const received = payload.vnp_SecureHash;
+  if (typeof received !== 'string' || !received) return false;
+  const values = QUERYDR_RESPONSE_HASH_FIELDS.map((k) => String(payload[k] ?? ''));
+  return sameSignature(signVnPipe(values, secretKey), received);
 }
 
 /**
@@ -180,12 +235,14 @@ export class VnPayProvider implements PaymentProvider {
   constructor(private readonly config: VnPayConfig) {}
 
   async createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
-    const now = new Date();
-    const expire = new Date(now.getTime() + 15 * 60 * 1000);
+    // The create date is the order's, not the clock's: `querydr` must send
+    // the same value back as `vnp_TransactionDate`.
+    const created = input.createdAt ?? new Date();
+    const expire = new Date(created.getTime() + 15 * 60 * 1000);
 
     // The parameter table caps `vnp_Amount` at 12 characters. The wire
     // value is the amount multiplied by 100, so the largest order the
-    // gateway accepts is 99,999,999,999 / 100 = 999,999,999 VND. An
+    // gateway accepts is 999,999,999,999 / 100 = 9,999,999,999 VND. An
     // order above that would be rejected by the gateway - and the buyer
     // would be stuck on a payment page that never works.
     //
@@ -221,7 +278,7 @@ export class VnPayProvider implements PaymentProvider {
       vnp_Locale: 'vn',
       vnp_ReturnUrl: input.returnUrl,
       vnp_IpAddr: normalizeClientIp(input.clientIp),
-      vnp_CreateDate: formatVnTime(now),
+      vnp_CreateDate: formatVnTime(created),
       vnp_ExpireDate: formatVnTime(expire),
     };
 
@@ -295,31 +352,35 @@ export class VnPayProvider implements PaymentProvider {
    * `PENDING_PAYMENT` until the reservation expired, even though the
    * buyer had already paid.
    *
-   * The request is signed with the same HMAC-SHA512 routine, and the
-   * response is verified the same way. A failure here is *not* an error
-   * for the caller: it returns `null` and the order keeps waiting.
+   * The API signs differently from `pay`: both the request and the
+   * response checksum are HMAC-SHA512 over a fixed list of values joined
+   * by `|` (see `QUERYDR_REQUEST_HASH_FIELDS`). A failure here is *not* an
+   * error for the caller: an unreachable gateway gives `null`, an answer
+   * that is not correctly signed gives `signatureValid: false`, and in
+   * both cases the order keeps waiting.
    */
-  async queryTransaction(gatewayRef: string): Promise<VerifyResult | null> {
-    const now = formatVnTime(new Date());
-
-    const params: Record<string, string> = {
+  async queryTransaction(input: QueryTransactionInput): Promise<VerifyResult | null> {
+    const params = {
+      // Unique per request: the gateway answers `94` (duplicate request)
+      // to a request id it has already seen that day, and the same order
+      // is asked about more than once.
+      vnp_RequestId: crypto.randomUUID().replace(/-/g, ''),
       vnp_Version: '2.1.0',
       vnp_Command: 'querydr',
       vnp_TmnCode: this.config.merchantCode,
-      vnp_TxnRef: gatewayRef,
-      vnp_TransactionDate: now,
-      // The request id has to be unique per day. Concatenating the ref and
-      // the full timestamp and then cutting the result to 32 characters
-      // would keep only the ref - the date would be sliced away and every
-      // request for the same order would carry the same id. The date goes
-      // first so it is always part of the id.
-      vnp_RequestId: `${now.slice(0, 8)}${gatewayRef.slice(0, 16)}`,
-      vnp_OrderType: 'other',
-      vnp_CurrCode: 'VND',
-      vnp_Locale: 'vn',
-    };
+      vnp_TxnRef: input.gatewayRef,
+      // The date of the *payment* (its `vnp_CreateDate`), not of this query.
+      vnp_TransactionDate: formatVnTime(input.createdAt),
+      vnp_CreateDate: formatVnTime(new Date()),
+      vnp_IpAddr: QUERYDR_SERVER_IP,
+      vnp_OrderInfo: `Truy van giao dich ${input.gatewayRef}`,
+    } satisfies Record<(typeof QUERYDR_REQUEST_HASH_FIELDS)[number], string>;
 
-    const body = { ...params, vnp_SecureHash: buildSignMessage(params, this.config.secretKey) };
+    const signature = signVnPipe(
+      QUERYDR_REQUEST_HASH_FIELDS.map((k) => params[k]),
+      this.config.secretKey,
+    );
+    const body = { ...params, vnp_SecureHash: signature };
 
     let response: Response;
     try {
@@ -344,13 +405,34 @@ export class VnPayProvider implements PaymentProvider {
 
     let payload: Record<string, string>;
     try {
-      payload = (await response.json()) as Record<string, string>;
+      // The answer is JSON, so a value may arrive as a number; the checksum
+      // is computed over the text, so every value is read as a string.
+      const json = (await response.json()) as Record<string, unknown>;
+      payload = Object.fromEntries(
+        Object.entries(json).map(([k, v]) => [k, v === undefined || v === null ? '' : String(v)]),
+      );
     } catch {
       return null;
     }
 
-    if (!verifySignature(payload, this.config.secretKey)) return null;
+    // An answer that is not correctly signed is never trusted - it carries
+    // no amount or transaction number - but it is returned instead of
+    // dropped, so the re-check can log the gateway's code. The sandbox
+    // answers querydr with an unsigned
+    // `{"vnp_ResponseCode":"99","vnp_Message":"Unexpected error"}`, and a
+    // silent `null` made that look the same as "not paid yet".
+    if (!verifyQueryResponse(payload, this.config.secretKey)) {
+      return {
+        signatureValid: false,
+        ok: false,
+        code: payload.vnp_ResponseCode || 'UNKNOWN',
+        message: payload.vnp_Message ?? '',
+        raw: payload,
+      };
+    }
 
+    // `vnp_ResponseCode` says whether the *query* worked (`91` = no such
+    // transaction); `vnp_TransactionStatus` says whether the buyer paid.
     const responseCode = payload.vnp_ResponseCode ?? '';
     const transactionStatus = payload.vnp_TransactionStatus ?? '';
     const ok =

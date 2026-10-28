@@ -42,7 +42,6 @@ export function providerFor(deps: AppDeps): PaymentProvider {
     vnpayApiUrl: deps.config.vnpay.vnpayApiUrl,
     merchantCode: deps.config.vnpay.merchantCode,
     secretKey: deps.config.vnpay.secretKey,
-    returnUrl: `${deps.config.publicBaseUrl}/api/orders/return`,
     // The IPN URL is *registered* in the merchant portal, not sent with
     // the payment. It is kept here so the operator can be shown the URL
     // that has to be registered.
