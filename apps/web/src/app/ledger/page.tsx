@@ -37,14 +37,18 @@ const KIND_TONE: Record<string, 'info' | 'brand' | 'success' | 'neutral' | 'dang
   expense: 'danger',
 };
 
-const REF_TONE: Record<string, 'info' | 'success'> = {
+const REF_TONE: Record<string, 'info' | 'success' | 'warning'> = {
   PAYMENT_CAPTURE: 'info',
   ESCROW_RELEASE: 'success',
+  LATE_PAYMENT_REFUND: 'warning',
+  REFUND_REASSIGN: 'warning',
 };
 
 const REF_LABEL: Record<string, string> = {
   PAYMENT_CAPTURE: 'Thanh toán',
   ESCROW_RELEASE: 'Giải ngân escrow',
+  LATE_PAYMENT_REFUND: 'Hoàn tiền',
+  REFUND_REASSIGN: 'Chuyển nợ hoàn tiền',
 };
 
 export default async function LedgerPage() {

@@ -22,7 +22,11 @@ export const eventListingInputSchema = z.object({
   sellerId: z.string().uuid(),
   title: z.string().trim().min(1, 'Thiếu tên nhóm vé').max(120),
   quantityTotal: z.coerce.number().int().min(1).max(1000),
-  priceVnd: z.coerce.number().int().min(0).max(1_000_000_000),
+  // A free ticket cannot be paid for: the ledger rejects a zero-amount
+  // posting (`CHECK (amount_vnd > 0)` and a positive transaction total),
+  // so the buyer would be sent to a payment page that cannot complete the
+  // capture. The minimum is one dong.
+  priceVnd: z.coerce.number().int().min(1, 'Giá vé phải lớn hơn 0').max(1_000_000_000),
 });
 
 export type EventListingInput = z.infer<typeof eventListingInputSchema>;

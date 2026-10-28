@@ -7,6 +7,7 @@ import {
   ensureUserAccounts,
   getAccountByCode,
   pendingAccountCode,
+  refundAccountCode,
 } from '../db/accounts.js';
 
 /**
@@ -168,6 +169,8 @@ export interface UserBalances {
   userId: string;
   pendingVnd: number;
   availableVnd: number;
+  /** money the platform owes this user back (a late payment) */
+  refundOwedVnd: number;
   totalVnd: number;
   platformFeeVnd: number;
   gatewayCashVnd: number;
@@ -182,12 +185,14 @@ export async function getUserBalances(
 
   const pending = byCode.get(pendingAccountCode(userId))?.balanceVnd ?? 0;
   const available = byCode.get(availableAccountCode(userId))?.balanceVnd ?? 0;
+  const refundOwed = byCode.get(refundAccountCode(userId))?.balanceVnd ?? 0;
 
   return {
     userId,
     pendingVnd: pending,
     availableVnd: available,
-    totalVnd: pending + available,
+    refundOwedVnd: refundOwed,
+    totalVnd: pending + available + refundOwed,
     platformFeeVnd: byCode.get(ACCOUNT_CODES.platformFee)?.balanceVnd ?? 0,
     gatewayCashVnd: byCode.get(ACCOUNT_CODES.gatewayCash)?.balanceVnd ?? 0,
   };
@@ -211,6 +216,78 @@ export async function listTransactions(
     ORDER BY created_at DESC, id DESC
     LIMIT ${limit}
   `;
+
+  const lines = await sql<
+    Array<{
+      txn_id: string;
+      code: string;
+      name: string;
+      direction: 'debit' | 'credit';
+      amount_vnd: string;
+    }>
+  >`
+    SELECT e.txn_id, a.code, a.name, e.direction, e.amount_vnd
+    FROM ledger_entries e
+    JOIN ledger_accounts a ON a.id = e.account_id
+    WHERE e.txn_id IN ${sql(txns.map((t) => t.id))}
+    ORDER BY a.code
+  `;
+
+  const linesByTxn = new Map<string, TransactionSummary['lines']>();
+  for (const l of lines) {
+    const arr = linesByTxn.get(l.txn_id) ?? [];
+    arr.push({
+      accountCode: l.code,
+      accountName: l.name,
+      direction: l.direction,
+      amountVnd: Number(l.amount_vnd),
+    });
+    linesByTxn.set(l.txn_id, arr);
+  }
+
+  return txns.map((t) => ({
+    txnId: t.id,
+    refType: t.ref_type,
+    refId: t.ref_id,
+    memo: t.memo,
+    createdAt: t.created_at,
+    lines: linesByTxn.get(t.id) ?? [],
+  }));
+}
+
+/**
+ * The transactions that touched one user's accounts.
+ *
+ * The wallet cannot simply take the last N transactions of the whole
+ * platform and filter them in JavaScript: on a busy platform the user's
+ * own entries would fall outside that window and simply disappear from
+ * their wallet. The filter is therefore done in the database, and the
+ * limit applies to *the user's* transactions.
+ */
+export async function listTransactionsForUser(
+  sql: Db,
+  userId: string,
+  limit = 50,
+): Promise<TransactionSummary[]> {
+  const txns = await sql<
+    Array<{
+      id: string;
+      ref_type: string;
+      ref_id: string | null;
+      memo: string;
+      created_at: string;
+    }>
+  >`
+    SELECT DISTINCT t.id, t.ref_type, t.ref_id, t.memo, t.created_at
+    FROM ledger_transactions t
+    JOIN ledger_entries e ON e.txn_id = t.id
+    JOIN ledger_accounts a ON a.id = e.account_id
+    WHERE a.owner_user_id = ${userId}
+    ORDER BY t.created_at DESC, t.id DESC
+    LIMIT ${limit}
+  `;
+
+  if (txns.length === 0) return [];
 
   const lines = await sql<
     Array<{
@@ -280,6 +357,21 @@ export async function auditLedger(sql: Db): Promise<{
 }
 
 /**
+ * The display name of a user, used to label their ledger accounts.
+ *
+ * The name is read from the `users` table rather than passed in, because
+ * passing the id as the name would label the account "Tiền chờ giải ngân -
+ * 9babd67a-3607-4505-b42b-b02a6d0eead3" - a UUID in a place where a human
+ * name belongs.
+ */
+async function sellerName(sql: Db, userId: string): Promise<string> {
+  const rows = await sql<{ name: string }[]>`
+    SELECT name FROM users WHERE id = ${userId} LIMIT 1
+  `;
+  return rows[0]?.name ?? userId;
+}
+
+/**
  * Books a captured payment: money arrives at the gateway, part of it is owed
  * to the seller (escrowed) and the platform keeps the fee difference.
  */
@@ -295,7 +387,7 @@ export async function postPaymentCapture(
   },
 ): Promise<string> {
   await ensurePlatformAccounts(sql);
-  await ensureUserAccounts(sql, args.sellerId, args.sellerId);
+  await ensureUserAccounts(sql, args.sellerId, await sellerName(sql, args.sellerId));
 
   // A very cheap ticket can round the platform fee down to zero (5% of a
   // 9-dong subtotal is 0). The journal rejects a zero-amount line, so the
@@ -360,15 +452,21 @@ export async function postEscrowRelease(
  *
  * The buyer paid, but the tickets were already sold to somebody else, so the
  * seller must not receive the money. The amount leaves the gateway cash and
- * becomes a liability towards the buyer - the platform owes them a refund.
+ * becomes a liability towards *that buyer* - the platform owes them a
+ * refund. The refund is booked on a per-buyer account
+ * (`liability:user:{id}:refund`) so the buyer can see what they are owed
+ * in their own wallet, instead of the platform holding an anonymous lump
+ * of money somewhere.
+ *
  * The actual refund API call is out of scope for this test task, so the
- * money stays in `liability:refund_payable` until an operator refunds it.
+ * money stays in that account until an operator refunds it.
  */
 export async function postLatePaymentRefund(
   sql: Db,
-  args: { orderId: string; amountVnd: number; memo: string },
+  args: { orderId: string; buyerId: string; amountVnd: number; memo: string },
 ): Promise<string> {
   await ensurePlatformAccounts(sql);
+  await ensureUserAccounts(sql, args.buyerId, await sellerName(sql, args.buyerId));
 
   return postTransaction(sql, {
     refType: 'LATE_PAYMENT_REFUND',
@@ -381,7 +479,7 @@ export async function postLatePaymentRefund(
         amountVnd: args.amountVnd,
       },
       {
-        accountCode: ACCOUNT_CODES.refundPayable,
+        accountCode: refundAccountCode(args.buyerId),
         direction: 'credit',
         amountVnd: args.amountVnd,
       },

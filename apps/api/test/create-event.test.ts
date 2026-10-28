@@ -85,6 +85,29 @@ describe.skipIf(!dbAvailable)('POST /api/admin/events', () => {
     expect(Number(created!.tickets_left)).toBe(10);
   });
 
+  it('refuses a free ticket', async () => {
+    // The ledger rejects a zero-amount posting, so a free ticket could
+    // never be captured: the buyer would be charged for a ticket that was
+    // never booked. The price has to be at least one dong.
+    const seller = await data.user('Seller create-event-free', 'seller');
+    const res = await post('/api/admin/events', {
+      name: 'Sự kiện miễn phí',
+      venue: 'Chỗ nào đó',
+      startsAtLocal: '2026-11-27T20:00',
+      listings: [
+        {
+          sellerId: seller.id,
+          title: 'Vé miễn phí',
+          quantityTotal: 10,
+          priceVnd: 0,
+        },
+      ],
+    });
+
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe('INVALID_INPUT');
+  });
+
   it('stores the local start time with the fixed +07:00 offset', async () => {
     const seller = await data.user('Seller create-event-tz', 'seller');
     const res = await post('/api/admin/events', {

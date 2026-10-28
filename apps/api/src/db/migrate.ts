@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSql } from './client.js';
-import { fixLegacyAccountNames, fixLegacyUserNames } from './legacy-text.js';
+import { fixLegacyAccountNames, fixLegacyUserNames, moveRefundsToBuyerAccounts } from './legacy-text.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +44,12 @@ export async function migrate(): Promise<void> {
   const relabelled = await fixLegacyAccountNames(sql);
   if (relabelled > 0) {
     console.log(`[migrate] relabelled ${relabelled} legacy account(s)`);
+  }
+  // The refunds used to sit on one shared account. They now sit on the
+  // buyer's own account, so a buyer can see what they are owed.
+  const reassigned = await moveRefundsToBuyerAccounts(sql);
+  if (reassigned > 0) {
+    console.log(`[migrate] moved the refunds of ${reassigned} buyer(s) to their own account`);
   }
   console.log('[migrate] schema applied');
 }

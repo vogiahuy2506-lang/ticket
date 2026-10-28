@@ -71,7 +71,12 @@ export default function OrderStatusPoller({ orderId, initialStatus }: Props) {
   const [checking, setChecking] = useState(false);
 
   useEffect(() => {
-    if (status !== 'PENDING_PAYMENT') return;
+    // An EXPIRED order is polled too: the lazy sweep released the ticket,
+    // but the buyer may well have paid - and if the IPN was lost, the money
+    // would sit at the gateway with nobody looking for it. The re-check
+    // asks the gateway directly, so a lost notification can still be
+    // recovered.
+    if (status !== 'PENDING_PAYMENT' && status !== 'EXPIRED') return;
 
     let cancelled = false;
     const tick = async () => {
@@ -137,11 +142,12 @@ export default function OrderStatusPoller({ orderId, initialStatus }: Props) {
         <p className="text-xs leading-relaxed text-ink-500">{meta.hint}</p>
       ) : null}
 
-      {status === 'PENDING_PAYMENT' ? (
+      {status === 'PENDING_PAYMENT' || status === 'EXPIRED' ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3.5 text-sm text-amber-900">
           <p>
-            Nếu vừa mới thanh toán xong, thông báo (IPN) từ cổng máy đến trong vài
-            giây - trang này sẽ tự cập nhật.
+            {status === 'PENDING_PAYMENT'
+              ? 'Nếu vừa mới thanh toán xong, thông báo (IPN) từ cổng máy đến trong vài giây - trang này sẽ tự cập nhật.'
+              : 'Thời gian giữ vé đã hết, nhưng nếu bạn đã thanh toán thì tiền vẫn được trả lại cho bạn. Trang này sẽ hỏi cổng thanh toán và tự cập nhật.'}
           </p>
           <button
             type="button"

@@ -13,6 +13,7 @@ export const LEDGER_REF_LABELS_VI: Record<LedgerRefType, string> = {
   PAYMENT_CAPTURE: 'Thanh toán đơn hàng',
   ESCROW_RELEASE: 'Giải ngân escrow đơn hàng',
   LATE_PAYMENT_REFUND: 'Hoàn tiền đơn hàng',
+  REFUND_REASSIGN: 'Chuyển nợ hoàn tiền sang tài khoản người mua',
 };
 
 /**

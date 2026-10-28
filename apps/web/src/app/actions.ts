@@ -1,6 +1,6 @@
 'use server';
 
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { API_BASE, api } from '@/lib/api';
@@ -57,6 +57,10 @@ export async function startCheckout(formData: FormData): Promise<void> {
     headers: {
       'content-type': 'application/json',
       'idempotency-key': idempotencyKey,
+      // The API is behind the storefront, so it would otherwise see the
+      // storefront's address and not the buyer's. The payment gateway wants
+      // the buyer's address (`vnp_IpAddr`), so it is forwarded here.
+      'x-forwarded-for': await clientIp(),
     },
     body: JSON.stringify({
       listingId: parsed.data.listingId,
@@ -73,6 +77,25 @@ export async function startCheckout(formData: FormData): Promise<void> {
 
   const { redirectUrl } = (await res.json()) as { redirectUrl: string };
   redirect(redirectUrl);
+}
+
+/**
+ * The buyer's IP address, as seen by the storefront.
+ *
+ * The payment gateway wants the *buyer's* address (`vnp_IpAddr`), and the
+ * API is behind the storefront - so without this header the API would send
+ * the storefront's own address to the gateway.
+ *
+ * `x-forwarded-for` is set by the proxy in front of the app in
+ * production; on a local run there is no proxy, so the request's own
+ * address is used.
+ */
+async function clientIp(): Promise<string> {
+  const store = await headers();
+  const forwarded = store.get('x-forwarded-for');
+  const first = forwarded?.split(',')[0]?.trim();
+  if (first) return first;
+  return store.get('x-real-ip')?.trim() || '127.0.0.1';
 }
 
 /**
@@ -118,6 +141,44 @@ export async function completeEvent(formData: FormData): Promise<void> {
   });
   if (res.ok) {
     revalidatePath('/', 'layout');
+  }
+}
+
+/**
+ * Cancels an order that is still waiting for its payment.
+ *
+ * The buyer gives the tickets back right away instead of waiting for the
+ * 15-minute reservation to expire, so somebody else can buy them.
+ *
+ * The buyer is taken from the session, not from the form: a server action
+ * is an HTTP endpoint, and the check has to live on the server.
+ */
+export async function cancelOrder(formData: FormData): Promise<void> {
+  const orderId = String(formData.get('orderId') ?? '');
+  if (!orderId) return;
+
+  const user = await getCurrentUser();
+  if (!user) {
+    redirect('/?error=' + encodeURIComponent('Chọn một người dùng trước'));
+    return;
+  }
+
+  const res = await fetch(`${API_BASE}/api/orders/${orderId}/cancel`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ buyerId: user.id }),
+  });
+
+  if (res.ok) {
+    revalidatePath(`/orders/${orderId}`);
+    revalidatePath('/orders');
+  } else {
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    redirect(
+      `/orders/${orderId}?error=${encodeURIComponent(
+        body.message ?? 'Không hủy được đơn hàng',
+      )}`,
+    );
   }
 }
 

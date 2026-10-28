@@ -15,7 +15,12 @@ import { TestData } from './helpers/fixtures.js';
 const dbAvailable = await isDatabaseReachable();
 
 const GATEWAY_CASH = 'asset:gateway_cash';
-const REFUND_PAYABLE = 'liability:refund_payable';
+
+/**
+ * The refund owed to a buyer lives on that buyer's own account, so the
+ * buyer can see what the platform owes them in their wallet.
+ */
+const refundAccount = (buyerId: string) => `liability:user:${buyerId}:refund`;
 
 describe.skipIf(!dbAvailable)('handleIpn', () => {
   let db: IsolatedDb;
@@ -140,13 +145,13 @@ describe.skipIf(!dbAvailable)('handleIpn', () => {
     `;
 
     const cashBefore = await data.balance(GATEWAY_CASH);
-    const refundBefore = await data.balance(REFUND_PAYABLE);
+    const refundBefore = await data.balance(refundAccount(fx.buyer.id));
 
     const result = await successIpn(order.id, 1_100_000, 'TXN-LATE');
 
     expect(result.status).toBe('REFUND_REQUIRED');
     expect(await data.balance(GATEWAY_CASH)).toBe(cashBefore + 1_100_000);
-    expect(await data.balance(REFUND_PAYABLE)).toBe(refundBefore + 1_100_000);
+    expect(await data.balance(refundAccount(fx.buyer.id))).toBe(refundBefore + 1_100_000);
     // The ticket comes back to the market.
     expect(await data.quantitySold(fx.listing.id)).toBe(0);
   });
@@ -164,7 +169,7 @@ describe.skipIf(!dbAvailable)('handleIpn', () => {
 
     await successIpn(order.id, 1_100_000, 'TXN-FIRST');
     const cashAfterFirst = await data.balance(GATEWAY_CASH);
-    const refundBefore = await data.balance(REFUND_PAYABLE);
+    const refundBefore = await data.balance(refundAccount(fx.buyer.id));
 
     const result = await successIpn(order.id, 1_100_000, 'TXN-SECOND');
 
@@ -172,7 +177,7 @@ describe.skipIf(!dbAvailable)('handleIpn', () => {
     // The money must be somewhere: the gateway holds more, and the buyer
     // is owed it back.
     expect(await data.balance(GATEWAY_CASH)).toBe(cashAfterFirst + 1_100_000);
-    expect(await data.balance(REFUND_PAYABLE)).toBe(refundBefore + 1_100_000);
+    expect(await data.balance(refundAccount(fx.buyer.id))).toBe(refundBefore + 1_100_000);
   });
 
   it('books a payment for an order that was already released', async () => {
@@ -190,13 +195,13 @@ describe.skipIf(!dbAvailable)('handleIpn', () => {
     await db.sql`UPDATE orders SET status = 'RELEASED' WHERE id = ${order.id}`;
 
     const cashBefore = await data.balance(GATEWAY_CASH);
-    const refundBefore = await data.balance(REFUND_PAYABLE);
+    const refundBefore = await data.balance(refundAccount(fx.buyer.id));
 
     const result = await successIpn(order.id, 1_100_000, 'TXN-AFTER-RELEASE');
 
     expect(result.applied).toBe(true);
     expect(await data.balance(GATEWAY_CASH)).toBe(cashBefore + 1_100_000);
-    expect(await data.balance(REFUND_PAYABLE)).toBe(refundBefore + 1_100_000);
+    expect(await data.balance(refundAccount(fx.buyer.id))).toBe(refundBefore + 1_100_000);
   });
 
   it('books a payment for an order that was already refunded', async () => {
@@ -213,12 +218,12 @@ describe.skipIf(!dbAvailable)('handleIpn', () => {
     await successIpn(order.id, 1_100_000, 'TXN-REFUND-1');
 
     const cashBefore = await data.balance(GATEWAY_CASH);
-    const refundBefore = await data.balance(REFUND_PAYABLE);
+    const refundBefore = await data.balance(refundAccount(fx.buyer.id));
 
     const result = await successIpn(order.id, 1_100_000, 'TXN-REFUND-2');
 
     expect(result.applied).toBe(true);
     expect(await data.balance(GATEWAY_CASH)).toBe(cashBefore + 1_100_000);
-    expect(await data.balance(REFUND_PAYABLE)).toBe(refundBefore + 1_100_000);
+    expect(await data.balance(refundAccount(fx.buyer.id))).toBe(refundBefore + 1_100_000);
   });
 });

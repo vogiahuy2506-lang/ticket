@@ -1,4 +1,6 @@
+import { toVnSafeText } from '@tce/shared';
 import { signVnParams } from './vnpay-crypto.js';
+import { formatVnTime } from './vnpay.js';
 import type {
   CreatePaymentInput,
   CreatePaymentResult,
@@ -20,6 +22,12 @@ import type {
  * URL-encoded parameters, and the IPN comes in as a GET request - so the
  * application code that talks to the real sandbox is the same code that
  * talks to the mock. A mock with a different contract would hide bugs.
+ *
+ * The one thing the mock does *not* do is send a parameter the real gateway
+ * does not accept. It used to send `vnp_NotifyUrl` in the query string
+ * (the real gateway takes the notify address from the merchant portal, not
+ * from the request), which is exactly the kind of drift that lets a mock
+ * hide a gap. The notify address now travels as a form attribute only.
  *
  * Development aid only - it is not a payment gateway and it is listed in the
  * README under "not production ready".
@@ -49,23 +57,36 @@ export class MockProvider implements PaymentProvider {
   constructor(private readonly mockPayBaseUrl: string) {}
 
   async createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
+    const now = new Date();
+    const expire = new Date(now.getTime() + 15 * 60 * 1000);
+
     const params: Record<string, string> = {
       vnp_Version: '2.1.0',
       vnp_Command: 'pay',
-      vnp_TmnCode: 'MOCKMERCHANT',
+      vnp_TmnCode: 'MOCKMRC',
       vnp_OrderType: 'other',
       vnp_Amount: String(input.amountVnd * MOCK_AMOUNT_FACTOR),
       vnp_CurrCode: 'VND',
-      vnp_TxnRef: input.orderId,
-      vnp_OrderInfo: input.orderInfo,
+      vnp_TxnRef: input.gatewayRef,
+      vnp_OrderInfo: toVnSafeText(input.orderInfo),
       vnp_Locale: 'vn',
       vnp_ReturnUrl: input.returnUrl,
-      vnp_NotifyUrl: input.notifyUrl,
       vnp_IpAddr: input.clientIp,
+      // The dates are part of the real request, so the mock sends them
+      // too: a mock with a smaller parameter set would let a missing
+      // parameter slip through unnoticed.
+      vnp_CreateDate: formatVnTime(now),
+      vnp_ExpireDate: formatVnTime(expire),
     };
     const query = new URLSearchParams({ ...params, vnp_SecureHash: sign(params) });
     const base = new URL('/mock-pay', this.mockPayBaseUrl);
     base.search = query.toString();
+    // The notify address travels under its own name, not as `vnp_NotifyUrl`:
+    // the real gateway does not accept that parameter (the IPN URL is
+    // registered in the merchant portal), and the whole point of the mock
+    // is to have the same parameter set as the real thing. Without this the
+    // mock would accept a request the real gateway would reject.
+    base.searchParams.set('mock_notify', input.notifyUrl);
     return { provider: this.name, redirectUrl: base.toString() };
   }
 

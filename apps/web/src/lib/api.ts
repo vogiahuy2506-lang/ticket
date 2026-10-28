@@ -65,6 +65,31 @@ export const api = {
       }>;
     }>(`/api/events/${id}`),
 
+  orders: (userId: string) =>
+    apiFetch<{
+      orders: Array<{
+        id: string;
+        status: string;
+        quantity: number;
+        grossVnd: number;
+        sellerNetVnd: number;
+        platformFeeVnd: number;
+        createdAt: string;
+        paidAt: string | null;
+        releasedAt: string | null;
+        expiresAt: string;
+        eventId: string;
+        eventName: string;
+        eventStartsAt: string;
+        eventStatus: string;
+        listingTitle: string;
+        buyerId: string;
+        buyerName: string;
+        sellerId: string;
+        sellerName: string;
+      }>;
+    }>(`/api/orders?userId=${encodeURIComponent(userId)}`),
+
   order: (id: string) =>
     apiFetch<{
       order: {
@@ -109,6 +134,7 @@ export const api = {
         userId: string;
         pendingVnd: number;
         availableVnd: number;
+        refundOwedVnd: number;
         totalVnd: number;
         platformFeeVnd: number;
         gatewayCashVnd: number;
@@ -157,6 +183,13 @@ export const api = {
         name: string;
         pendingVnd: number;
         availableVnd: number;
+      }>;
+      refundOrders: Array<{
+        orderId: string;
+        buyerName: string;
+        eventName: string;
+        grossVnd: number;
+        createdAt: string;
       }>;
     }>('/api/admin/overview'),
 

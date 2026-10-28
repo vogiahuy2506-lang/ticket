@@ -73,3 +73,85 @@ export async function fixLegacyAccountNames(sql: Db): Promise<number> {
 
   return pending;
 }
+
+/**
+ * Moves the refunds of the old shared account onto the per-buyer accounts.
+ *
+ * The refunds used to be booked on one global `liability:refund_payable`
+ * account, which meant a buyer could not see what the platform owed them.
+ * They are now booked on `liability:user:{id}:refund`.
+ *
+ * A journal entry cannot be edited or deleted, so the money is *moved*, not
+ * rewritten: a reversing transaction takes the balance off the old account
+ * and puts it on the new one. The order that produced the refund is known
+ * from the transaction's `ref_id`, so each buyer's refunds can be split
+ * without guessing.
+ *
+ * The old account is left in place (with a zero balance) so the history
+ * stays readable.
+ */
+export async function moveRefundsToBuyerAccounts(sql: Db): Promise<number> {
+  const oldAccount = await sql<{ id: string }[]>`
+    SELECT id FROM ledger_accounts WHERE code = 'liability:refund_payable' LIMIT 1
+  `;
+  if (!oldAccount[0]) return 0;
+
+  const balance = await sql<{ total: string }[]>`
+    SELECT COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount_vnd
+                             WHEN direction = 'debit'  THEN -amount_vnd END), 0) AS total
+    FROM ledger_entries
+    WHERE account_id = ${oldAccount[0].id}
+  `;
+  const total = Number(balance[0]?.total ?? 0);
+  if (total === 0) return 0;
+
+  // The refunds that are still on the old account, grouped by the buyer of
+  // the order they belong to.
+  //
+  // The transactions this migration writes are marked with
+  // `ref_type = 'REFUND_REASSIGN'`, so a second run finds nothing left on
+  // the old account and does nothing.
+  const refunds = await sql<
+    Array<{ buyer_id: string; user_name: string; amount_vnd: string }>
+  >`
+    SELECT o.buyer_id, u.name AS user_name, SUM(e.amount_vnd) AS amount_vnd
+    FROM ledger_entries e
+    JOIN ledger_transactions t ON t.id = e.txn_id
+    JOIN orders o ON o.id = t.ref_id
+    JOIN users u ON u.id = o.buyer_id
+    WHERE e.account_id = ${oldAccount[0].id}
+      AND t.ref_type = 'LATE_PAYMENT_REFUND'
+      AND e.direction = 'credit'
+    GROUP BY o.buyer_id, u.name
+  `;
+
+  for (const r of refunds) {
+    const amount = Number(r.amount_vnd);
+    if (amount <= 0) continue;
+
+    const code = `liability:user:${r.buyer_id}:refund`;
+    const account = await sql<{ id: string }[]>`
+      INSERT INTO ledger_accounts (code, kind, owner_user_id, name)
+      VALUES (${code}, 'liability', ${r.buyer_id}, ${`Tiền phải hoàn - ${r.user_name}`})
+      ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+      RETURNING id
+    `;
+
+    // A reversing pair: the money leaves the shared account and lands on
+    // the buyer's own account. Two entries, one transaction, balanced.
+    const txn = await sql<{ id: string }[]>`
+      INSERT INTO ledger_transactions (ref_type, ref_id, memo)
+      VALUES ('REFUND_REASSIGN', NULL, 'Chuyển nợ hoàn tiền sang tài khoản của người mua')
+      RETURNING id
+    `;
+
+    await sql`
+      INSERT INTO ledger_entries (txn_id, account_id, direction, amount_vnd)
+      VALUES
+        (${txn[0]!.id}, ${oldAccount[0].id}, 'debit', ${amount}),
+        (${txn[0]!.id}, ${account[0]!.id}, 'credit', ${amount})
+    `;
+  }
+
+  return refunds.length;
+}

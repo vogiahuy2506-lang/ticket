@@ -23,7 +23,12 @@ export interface AppDeps {
     publicBaseUrl: string;
     webBaseUrl: string;
     mockGateway: boolean;
-    vnpay: { vnpayUrl: string; merchantCode: string; secretKey: string };
+    vnpay: {
+      vnpayUrl: string;
+      vnpayApiUrl: string;
+      merchantCode: string;
+      secretKey: string;
+    };
   };
 }
 
@@ -34,9 +39,13 @@ export function providerFor(deps: AppDeps): PaymentProvider {
   }
   return new VnPayProvider({
     vnpayUrl: deps.config.vnpay.vnpayUrl,
+    vnpayApiUrl: deps.config.vnpay.vnpayApiUrl,
     merchantCode: deps.config.vnpay.merchantCode,
     secretKey: deps.config.vnpay.secretKey,
     returnUrl: `${deps.config.publicBaseUrl}/api/orders/return`,
+    // The IPN URL is *registered* in the merchant portal, not sent with
+    // the payment. It is kept here so the operator can be shown the URL
+    // that has to be registered.
     notifyUrl: `${deps.config.publicBaseUrl}/api/ipn/vnpay`,
   });
 }

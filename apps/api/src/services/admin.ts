@@ -58,6 +58,21 @@ export interface AdminOverview {
     pendingVnd: number;
     availableVnd: number;
   }>;
+  /**
+   * The orders the platform owes money back for.
+   *
+   * The total is not enough: the operator has to call the gateway's
+   * refund API for *each* of these orders, so the list has to name them.
+   * Without it the only way to find out which buyer is owed money is to
+   * read the journal by hand.
+   */
+  refundOrders: Array<{
+    orderId: string;
+    buyerName: string;
+    eventName: string;
+    grossVnd: number;
+    createdAt: string;
+  }>;
 }
 
 /**
@@ -86,8 +101,9 @@ export async function getAdminOverview(sql: Db): Promise<AdminOverview> {
     balances.find((b) => b.accountCode === 'asset:gateway_cash')?.balanceVnd ?? 0;
   const platformFeeVnd =
     balances.find((b) => b.accountCode === 'revenue:platform_fee')?.balanceVnd ?? 0;
-  const refundPayableVnd =
-    balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  const refundPayableVnd = balances
+    .filter((b) => b.accountCode.endsWith(':refund'))
+    .reduce((sum, b) => sum + b.balanceVnd, 0);
 
   // Per-seller escrow split, so an operator can see who the money belongs to.
   const sellers = await sql<
@@ -197,6 +213,34 @@ export async function getAdminOverview(sql: Db): Promise<AdminOverview> {
     SELECT COALESCE(SUM(gross_vnd), 0)::text AS v FROM orders WHERE status IN ('PAID', 'RELEASED')
   `;
 
+  // The orders that have to be refunded. A second payment for an order
+  // that was already settled also lands on the buyer's refund account,
+  // but the *order* is not in REFUND_REQUIRED state - so the list is
+  // built from the orders, and the total from the ledger. The two
+  // together tell the operator what is owed and to whom.
+  const refundOrderRows = await sql<
+    Array<{
+      order_id: string;
+      buyer_name: string;
+      event_name: string;
+      gross_vnd: string;
+      created_at: string;
+    }>
+  >`
+    SELECT
+      o.id AS order_id,
+      b.name AS buyer_name,
+      e.name AS event_name,
+      o.gross_vnd,
+      o.created_at
+    FROM orders o
+    JOIN events e ON e.id = o.event_id
+    JOIN users  b ON b.id = o.buyer_id
+    WHERE o.status = 'REFUND_REQUIRED'
+    ORDER BY o.created_at ASC
+    LIMIT 100
+  `;
+
   return {
     escrowHeldVnd,
     releasedVnd,
@@ -215,6 +259,13 @@ export async function getAdminOverview(sql: Db): Promise<AdminOverview> {
       escrowVnd: Number(a.escrow_vnd),
     })),
     sellerEscrows,
+    refundOrders: refundOrderRows.map((r) => ({
+      orderId: r.order_id,
+      buyerName: r.buyer_name,
+      eventName: r.event_name,
+      grossVnd: Number(r.gross_vnd),
+      createdAt: r.created_at,
+    })),
   };
 }
 

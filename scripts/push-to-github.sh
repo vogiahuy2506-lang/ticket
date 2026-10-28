@@ -12,7 +12,26 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REMOTE_REPO="${REMOTE_REPO:-vogiahuy2506-lang/ticket}"
+# No default on purpose: the script must never push to a hard-coded
+# account. Pass the target explicitly:
+#   REMOTE_REPO=owner/name ./scripts/push-to-github.sh
+REMOTE_REPO="${REMOTE_REPO:-}"
+
+if [ -z "$REMOTE_REPO" ]; then
+  echo "REMOTE_REPO is not set."
+  echo ""
+  echo "Usage:"
+  echo "  REMOTE_REPO=owner/name ./scripts/push-to-github.sh"
+  echo ""
+  echo "Example:"
+  echo "  REMOTE_REPO=your-account/your-repo ./scripts/push-to-github.sh"
+  exit 1
+fi
+
+if ! printf '%s' "$REMOTE_REPO" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+  echo "REMOTE_REPO must look like 'owner/name' (got '$REMOTE_REPO')."
+  exit 1
+fi
 
 cd "$REPO_DIR"
 

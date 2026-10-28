@@ -30,6 +30,19 @@ export function availableAccountCode(userId: string): string {
   return `liability:user:${userId}:available`;
 }
 
+/**
+ * The refund owed to one buyer.
+ *
+ * The refund is a liability of the platform *towards a specific buyer*, so
+ * it has to be scoped to that buyer. A single global account
+ * (`liability:refund_payable`) would work for the books, but the buyer
+ * could not see what the platform owes them - their wallet would show 0
+ * while the platform was holding their money.
+ */
+export function refundAccountCode(userId: string): string {
+  return `liability:user:${userId}:refund`;
+}
+
 export interface AccountRow {
   id: string;
   code: string;
@@ -58,7 +71,8 @@ export async function ensureUserAccounts(sql: Db, userId: string, userName: stri
     INSERT INTO ledger_accounts (code, kind, owner_user_id, name)
     VALUES
       (${pendingAccountCode(userId)}, 'liability', ${userId}, ${`Tiền chờ giải ngân - ${userName}`}),
-      (${availableAccountCode(userId)}, 'liability', ${userId}, ${`Tiền khả dụng - ${userName}`})
+      (${availableAccountCode(userId)}, 'liability', ${userId}, ${`Tiền khả dụng - ${userName}`}),
+      (${refundAccountCode(userId)}, 'liability', ${userId}, ${`Tiền phải hoàn - ${userName}`})
     ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
   `;
 }

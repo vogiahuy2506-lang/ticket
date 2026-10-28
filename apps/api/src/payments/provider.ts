@@ -10,11 +10,29 @@
  */
 
 export interface CreatePaymentInput {
+  /** our own order id (a UUID) */
   orderId: string;
+  /**
+   * The reference that is sent to the gateway as `vnp_TxnRef`.
+   *
+   * It has to be alphanumeric, so it is the order id without its dashes.
+   * The incoming notification carries this reference, and it is what the
+   * order is matched on.
+   */
+  gatewayRef: string;
   amountVnd: number;
   orderInfo: string;
+  /** the buyer's IP address, in the shape the gateway accepts */
   clientIp: string;
   returnUrl: string;
+  /**
+   * The IPN endpoint.
+   *
+   * The real gateway does NOT accept this as a request parameter - the IPN
+   * URL is registered once in the merchant portal. The field is kept so
+   * the local mock can be told where to send its notification, and so the
+   * operator can be shown the URL that has to be registered.
+   */
   notifyUrl: string;
 }
 
@@ -57,6 +75,11 @@ export interface PaymentProvider {
    * Optional: query the gateway for the authoritative status of a
    * transaction (used by the "re-check" button when the buyer returns
    * before the IPN has arrived).
+   *
+   * It is the `querydr` API. It matters because an IPN can be lost: the
+   * buyer's browser comes back but the server-to-server notification never
+   * arrives, and without a second source the order would wait for the
+   * reservation to expire even though the buyer had paid.
    */
-  queryTransaction?(orderId: string): Promise<VerifyResult | null>;
+  queryTransaction?(gatewayRef: string): Promise<VerifyResult | null>;
 }

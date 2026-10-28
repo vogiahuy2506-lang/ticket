@@ -18,6 +18,7 @@ export const viewport: Viewport = {
 
 const NAV = [
   { href: '/', label: 'Sự kiện' },
+  { href: '/orders', label: 'Đơn hàng' },
   { href: '/wallet', label: 'Ví của tôi' },
   { href: '/ledger', label: 'Lịch sử giao dịch' },
 ];

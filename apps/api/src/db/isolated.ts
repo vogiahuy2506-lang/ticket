@@ -20,6 +20,8 @@ export interface IsolatedDb {
   sql: Sql;
   /** the name of the private schema */
   schema: string;
+  /** the connection string the schema lives in */
+  url: string;
   /** drops the schema and closes the connection */
   drop(): Promise<void>;
 }
@@ -83,6 +85,7 @@ export async function createIsolatedDb(
   return {
     sql,
     schema,
+    url,
     drop: async () => {
       await sql.end();
       await dropSchema(url, schema);
@@ -148,6 +151,16 @@ export async function deleteE2eRows(sql: Sql): Promise<number> {
       );
       DELETE FROM ledger_transactions WHERE ref_id IN (
         SELECT o.id FROM orders o
+        JOIN events e ON e.id = o.event_id
+        WHERE e.name LIKE 'E2E%'
+      );
+      -- The notification log is matched on the *gateway reference* (the
+      -- order id without its dashes), not on the order id: the IPN
+      -- carries vnp_TxnRef, which is the reference - a UUID with
+      -- dashes would not be alphanumeric. Matching on the id with the
+      -- dashes would silently leave the rows behind.
+      DELETE FROM payment_events WHERE txn_ref::text IN (
+        SELECT replace(o.id::text, '-', '') FROM orders o
         JOIN events e ON e.id = o.event_id
         WHERE e.name LIKE 'E2E%'
       );

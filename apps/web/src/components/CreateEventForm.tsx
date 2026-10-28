@@ -170,7 +170,11 @@ export function CreateEventForm({ sellers }: { sellers: SellerOption[] }) {
               <span className="text-[11px] text-ink-500">Giá (VND)</span>
               <input
                 type="number"
-                min={0}
+                // A free ticket can never be captured: the ledger
+                // rejects a zero-amount posting, so the buyer would be
+                // charged for a ticket that was never booked. The price
+                // has to be at least one dong.
+                min={1}
                 step={1000}
                 value={row.price}
                 onChange={(e) =>

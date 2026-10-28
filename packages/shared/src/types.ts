@@ -4,6 +4,8 @@ export const ORDER_STATUSES = [
   'RELEASED',
   'FAILED',
   'CANCELLED',
+  'EXPIRED',
+  'REFUND_REQUIRED',
 ] as const;
 
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
@@ -36,6 +38,7 @@ export const LEDGER_REF_TYPES = [
   'PAYMENT_CAPTURE',
   'ESCROW_RELEASE',
   'LATE_PAYMENT_REFUND',
+  'REFUND_REASSIGN',
 ] as const;
 export type LedgerRefType = (typeof LEDGER_REF_TYPES)[number];
 
@@ -46,6 +49,8 @@ export const ORDER_STATUS_LABELS_VI: Record<OrderStatus, string> = {
   RELEASED: 'Đã giải ngân',
   FAILED: 'Thanh toán thất bại',
   CANCELLED: 'Đã huỷ',
+  EXPIRED: 'Hết thời gian giữ vé',
+  REFUND_REQUIRED: 'Cần hoàn tiền',
 };
 
 export const EVENT_STATUS_LABELS_VI: Record<EventStatus, string> = {

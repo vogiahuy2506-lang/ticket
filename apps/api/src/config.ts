@@ -15,7 +15,10 @@ export interface AppConfig {
   webBaseUrl: string;
   mockGateway: boolean;
   vnpay: {
+    /** the payment page the buyer is redirected to */
     vnpayUrl: string;
+    /** the server-to-server API (querydr / refund) */
+    vnpayApiUrl: string;
     merchantCode: string;
     secretKey: string;
   };
@@ -45,6 +48,14 @@ export function loadConfig(): AppConfig {
       vnpayUrl:
         process.env.VNPAY_URL ??
         'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html',
+      // The server-to-server API. `querydr` asks the gateway for the
+      // authoritative status of a transaction, which is how a lost IPN is
+      // recovered: the buyer's browser comes back, but the notification
+      // never arrives, and without a second source the order would wait
+      // for the reservation to expire even though the buyer had paid.
+      vnpayApiUrl:
+        process.env.VNPAY_API_URL ??
+        'https://sandbox.vnpayment.vn/merchant_webapi/api/transaction',
       merchantCode: process.env.VNPAY_MERCHANT_CODE ?? '',
       secretKey: process.env.VNPAY_SECRET_KEY ?? '',
     },

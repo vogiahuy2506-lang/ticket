@@ -2,10 +2,15 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { checkoutSchema, computeFees, createEventSchema } from '@tce/shared';
 import { providerFor, type AppDeps } from './helpers.js';
 import {
+  cancelOrder,
+  canQueryGateway,
   createOrder,
+  decideQueryOutcome,
   expireStaleOrders,
+  findOrderByReference,
   getOrderStatus,
   handleIpn,
+  listOrdersForUser,
   OrderError,
   releaseEventEscrow,
 } from '../services/orders.js';
@@ -14,11 +19,31 @@ import {
   computeBalances,
   getUserBalances,
   listTransactions,
+  listTransactionsForUser,
 } from '../services/ledger.js';
 import { getAdminOverview, listAllOrders } from '../services/admin.js';
 import { createEvent, CreateEventError } from '../services/events.js';
 import { registerMockGatewayRoutes } from './mock-gateway.js';
 import { withTx } from '../db/types.js';
+
+/**
+ * The buyer's IP address, in the shape the payment gateway accepts.
+ *
+ * The gateway's `vnp_IpAddr` parameter is `Alphanumeric[7,45]`, so it has
+ * to be a plain IPv4 address - an IPv6 address is too long for 45
+ * characters, and `::1` is too short for 7.
+ *
+ * The API is behind the storefront, so `req.ip` is the *storefront's*
+ * address, not the buyer's. The storefront forwards the real address in
+ * `x-forwarded-for`, so the first entry of that header is the one that
+ * belongs to the buyer.
+ */
+function clientIpFrom(req: FastifyRequest): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  const first = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const candidate = (first?.split(',')[0] ?? req.ip ?? '').trim();
+  return candidate || '127.0.0.1';
+}
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   const deps = app as unknown as AppDeps;
@@ -100,15 +125,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       const provider = providerFor(deps);
       const payment = await provider.createPayment({
         orderId: order.id,
+        gatewayRef: order.gateway_ref!,
         amountVnd: Number(order.gross_vnd),
-        orderInfo: `Thanh toán đơn hàng ${order.id.slice(0, 8)}`,
-        clientIp: req.ip ?? '127.0.0.1',
+        // The gateway wants an unaccented description without special
+        // characters, so the text is normalised before it is sent.
+        orderInfo: `Thanh toan don hang ${order.id.slice(0, 8)}`,
+        // The buyer's address, not the address of the process that
+        // happens to receive the request: the API is behind the
+        // storefront, so `req.ip` is the storefront's address. The
+        // storefront forwards the real one in `x-forwarded-for`.
+        clientIp: clientIpFrom(req),
         returnUrl: `${config.webBaseUrl}/orders/${order.id}`,
         notifyUrl: `${config.publicBaseUrl}/api/ipn/vnpay`,
       });
 
       return {
         orderId: order.id,
+        // The reference the gateway knows the order by. It is alphanumeric,
+        // so it is not the order's UUID.
+        gatewayRef: order.gateway_ref,
         redirectUrl: payment.redirectUrl,
         grossVnd: Number(order.gross_vnd),
       };
@@ -121,6 +156,68 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ---------------------------------------------------------------- orders
+  /**
+   * The orders of one user.
+   *
+   * The order page is reached by URL, and the URL comes from the gateway's
+   * redirect. Without this list a buyer who closes the tab - or who buys
+   * on a phone and reads the receipt on a laptop - has no way back to the
+   * order, and cannot see that their payment is sitting in escrow.
+   *
+   * `role` decides which side of the order is the user's: a buyer sees
+   * what they bought, a seller what they sold, an operator everything.
+   */
+  app.get<{ Querystring: { userId?: string; role?: string } }>(
+    '/api/orders',
+    async (req, reply) => {
+      const userId = req.query.userId;
+      if (!userId) {
+        return reply.code(400).send({ error: 'USER_ID_REQUIRED' });
+      }
+
+      const users = await sql<{ id: string; role: string }[]>`
+        SELECT id, role FROM users WHERE id = ${userId} LIMIT 1
+      `;
+      const user = users[0];
+      if (!user) {
+        return reply.code(404).send({ error: 'USER_NOT_FOUND' });
+      }
+
+      // The role comes from the database, never from the query string:
+      // a caller must not be able to ask for somebody else's orders.
+      const orders = await listOrdersForUser(sql, user.id, user.role as 'buyer');
+      return { orders };
+    },
+  );
+
+  /**
+   * Cancels an order that is still waiting for its payment.
+   *
+   * The buyer gives the tickets back right away instead of waiting for the
+   * 15-minute reservation to expire, so somebody else can buy them. The
+   * buyer is taken from the body - the brief has no authentication, and
+   * the storefront always sends the current user.
+   */
+  app.post<{ Params: { id: string }; Body: { buyerId?: string } }>(
+    '/api/orders/:id/cancel',
+    async (req, reply) => {
+      const buyerId = (req.body as { buyerId?: string } | undefined)?.buyerId;
+      if (!buyerId) {
+        return reply.code(400).send({ error: 'BUYER_REQUIRED' });
+      }
+
+      try {
+        const result = await cancelOrder(sql, { orderId: req.params.id, buyerId });
+        return { cancelled: result.cancelled, status: result.order.status };
+      } catch (err) {
+        if (err instanceof OrderError) {
+          return reply.code(err.statusCode).send({ error: err.code, message: err.message });
+        }
+        throw err;
+      }
+    },
+  );
+
   app.get<{ Params: { id: string } }>('/api/orders/:id', async (req, reply) => {
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
@@ -138,11 +235,91 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * persisted status - the browser redirect never changes state. If the IPN
    * has not arrived yet the order is still PENDING_PAYMENT and the UI shows
    * "waiting for gateway confirmation" with a re-check button.
+   *
+   * The re-check also asks the gateway directly (`querydr`). An IPN can be
+   * lost - the tunnel was closed, the IPN URL was not registered, the
+   * gateway could not reach us - and the buyer's browser comes back all
+   * the same. Without a second source, the order would sit in
+   * `PENDING_PAYMENT` until the reservation expired, even though the buyer
+   * had paid.
+   *
+   * The gateway's answer is only applied if it is correctly signed and the
+   * amount matches the order. If the gateway cannot be reached, the re-check
+   * simply reports the persisted status and nothing else happens.
    */
   app.post<{ Params: { id: string } }>('/api/orders/:id/recheck', async (req, reply) => {
     const order = await getOrderStatus(sql, req.params.id);
     if (!order) return reply.code(404).send({ error: 'ORDER_NOT_FOUND' });
-    return { status: order.status, paidAt: order.paid_at, releasedAt: order.released_at };
+
+    // A payment that is still pending can be confirmed late - but so can
+    // one that has already been marked EXPIRED by the lazy sweep. The
+    // sweep only releases the *ticket*; it says nothing about the money.
+    // If the buyer paid and the notification was lost, the money is
+    // sitting at the gateway while the order says "expired" - and without
+    // this the order would never find it again, so the money would be
+    // stranded until somebody noticed it in the gateway's own report.
+    //
+    // The orders that must *not* be re-checked are the settled ones
+    // (PAID, RELEASED, FAILED, CANCELLED, REFUND_REQUIRED): their money is
+    // already booked, and a gateway answer would only duplicate it.
+    if (canQueryGateway(order.status) && order.gateway_ref) {
+      const provider = providerFor(deps);
+      const queried = await provider.queryTransaction?.(order.gateway_ref);
+      if (queried) {
+        // The decision is made by a pure function, so the rule can be
+        // tested without a gateway. Only a *success* that the gateway
+        // itself reported is applied - a query can answer "not found"
+        // for a payment that is still in flight, and applying that would
+        // cancel the order while the buyer is paying.
+        const outcome = decideQueryOutcome(queried, Number(order.gross_vnd));
+        if (outcome.action === 'skip') {
+          req.log.info(
+            { orderId: order.id, code: queried.code, reason: outcome.reason },
+            'the re-check did not apply the gateway answer',
+          );
+        } else {
+          // The gateway answer is applied through the same handler the
+          // IPN uses, so a late payment is booked exactly like a
+          // notification. The handler can still refuse it (a race with
+          // another notification, for instance) - and that refusal must
+          // not turn the re-check into a 500 for the buyer.
+          try {
+            const result = await handleIpn(sql, {
+              orderId: order.id,
+              amountVnd: queried.amountVnd!,
+              // The gateway's own transaction number, so a later IPN for
+              // the same payment is recognised as a replay instead of a
+              // second payment.
+              transactionId: outcome.transactionId,
+              transactionRef: queried.transactionRef ?? order.gateway_ref,
+              ok: queried.ok,
+              code: queried.code,
+              raw: { ...queried.raw, vnp_Source: 'querydr' },
+            });
+            req.log.info(
+              { orderId: order.id, status: result.status, applied: result.applied },
+              're-check applied the gateway answer',
+            );
+          } catch (err) {
+            if (err instanceof OrderError) {
+              req.log.warn(
+                { orderId: order.id, code: err.code, message: err.message },
+                'the re-check could not apply the gateway answer',
+              );
+            } else {
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    const refreshed = await getOrderStatus(sql, req.params.id);
+    return {
+      status: refreshed?.status,
+      paidAt: refreshed?.paid_at,
+      releasedAt: refreshed?.released_at,
+    };
   });
 
   // ------------------------------------------------------------------- IPN
@@ -216,7 +393,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(200).send({ RspCode: '99', Message: 'Invalid request' });
     }
 
-    const order = await getOrderStatus(sql, orderId);
+    // The gateway reference is not the order's UUID: `vnp_TxnRef` is
+    // alphanumeric, so it cannot contain the dashes of a UUID. The order
+    // therefore stores the reference it was given, and the notification is
+    // matched on it. The UUID is still accepted as a fallback, so an
+    // operator can look an order up by either.
+    const order = await findOrderByReference(sql, orderId);
     if (!order) {
       await logEvent(true, false);
       return reply.code(200).send({ RspCode: '01', Message: 'Order not found' });
@@ -224,27 +406,44 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     if (Number(order.gross_vnd) !== verification.amountVnd) {
       req.log.error(
-        { orderId, expected: order.gross_vnd, received: verification.amountVnd },
+        { orderId: order.id, expected: order.gross_vnd, received: verification.amountVnd },
         'IPN amount mismatch',
       );
       await logEvent(true, false);
       return reply.code(200).send({ RspCode: '04', Message: 'Invalid amount' });
     }
 
-    const result = await handleIpn(sql, {
-      orderId,
-      amountVnd: verification.amountVnd!,
-      transactionId: verification.transactionId ?? `${orderId}-${Date.now()}`,
-      transactionRef: verification.transactionRef ?? null,
-      ok: verification.ok,
-      code: verification.code,
-      raw: payload,
-    });
+    // The handler can refuse the notification - a race with another
+    // notification, for instance. The gateway is told with the official
+    // code (`99`, "invalid request") and keeps no retry loop open for a
+    // request we could not apply. The order is *not* silently changed.
+    let result;
+    try {
+      result = await handleIpn(sql, {
+        orderId: order.id,
+        amountVnd: verification.amountVnd!,
+        transactionId: verification.transactionId ?? `${order.id}-${Date.now()}`,
+        transactionRef: verification.transactionRef ?? null,
+        ok: verification.ok,
+        code: verification.code,
+        raw: payload,
+      });
+    } catch (err) {
+      if (err instanceof OrderError) {
+        req.log.error(
+          { orderId: order.id, code: err.code, message: err.message },
+          'the IPN could not be applied',
+        );
+        await logEvent(true, false);
+        return reply.code(200).send({ RspCode: '99', Message: 'Invalid request' });
+      }
+      throw err;
+    }
 
     await logEvent(true, result.applied);
 
     req.log.info(
-      { orderId, status: result.status, applied: result.applied },
+      { orderId: order.id, status: result.status, applied: result.applied },
       'IPN applied',
     );
 
@@ -272,18 +471,26 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * gates the button on the admin role, but the API itself is open - that is
    * listed in the README under "not production ready".
    */
-  app.post<{ Params: { id: string } }>('/api/events/:id/complete', async (req) => {
-    return await releaseEventEscrow(sql, { eventId: req.params.id });
+  app.post<{ Params: { id: string } }>('/api/events/:id/complete', async (req, reply) => {
+    try {
+      return await releaseEventEscrow(sql, { eventId: req.params.id });
+    } catch (err) {
+      // An unknown event is a 404, not a 500: the service reports it as
+      // an `OrderError`, and the route has to translate it.
+      if (err instanceof OrderError) {
+        return reply.code(err.statusCode).send({ error: err.code, message: err.message });
+      }
+      throw err;
+    }
   });
 
   // --------------------------------------------------------------- wallet
   app.get<{ Params: { userId: string } }>('/api/wallet/:userId', async (req) => {
     const balances = await getUserBalances(sql, req.params.userId);
-    const transactions = await listTransactions(sql, 50);
-    const mine = transactions.filter((t) =>
-      t.lines.some((l) => l.accountCode.includes(req.params.userId)),
-    );
-    return { balances, transactions: mine, allTransactions: transactions };
+    // The transactions are filtered by the *user* in the database, so a
+    // busy platform cannot push the user's own entries out of the window.
+    const transactions = await listTransactionsForUser(sql, req.params.userId, 50);
+    return { balances, transactions };
   });
 
   // --------------------------------------------------------------- ledger

@@ -48,6 +48,21 @@ export default async function WalletPage() {
         </div>
       </div>
 
+      {balances.refundOwedVnd > 0 ? (
+        <div className="card border-l-2 border-l-rose-400">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-ink-400">
+            Tiền sàn nợ bạn hoàn lại
+          </p>
+          <p className="mt-1.5 text-lg font-bold table-num text-rose-700">
+            {formatVnd(balances.refundOwedVnd)}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-ink-400">
+            Bạn đã trả tiền nhưng vé đã không còn, nên sàn giữ lại số tiền
+            này để hoàn lại bạn.
+          </p>
+        </div>
+      ) : null}
+
       <section className="card space-y-1">
         <SectionTitle title="Tổng cộng" />
         <MoneyRow

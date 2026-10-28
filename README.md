@@ -44,7 +44,7 @@ database comes up with:
 | seller | Võ Chị (người bán) |
 | admin | Ops Admin |
 
-Two events, six listings across the two sellers (one of them deliberately
+Two events, six listings across the three sellers (one of them deliberately
 priced at an odd amount - 333,333 VND - so the fee rounding is visible).
 
 Useful commands:
@@ -203,8 +203,8 @@ Reasons:
    Stripe, for example, would charge in USD and force a conversion step
    *before* the fee split - which is exactly where money bugs hide.
 2. **A real IPN contract.** VNPay posts an `IPN` notification with an
-   HMAC-SHA512 signature and publishes a `vnp_ApiUrl` that the merchant can
-   call back to confirm the transaction server-to-server. That means the app
+   HMAC-SHA512 signature and publishes a server-to-server API (`querydr`)
+   that the merchant can call to confirm a transaction. That means the app
    *verifies* the notification instead of trusting the browser redirect -
    which is what the brief asks for.
 3. **A public sandbox.** `sandbox.vnpayment.vn` accepts test cards without an
@@ -225,10 +225,15 @@ verifies:
 | `vnp_Amount` | the VND amount **multiplied by 100** (10,000 VND is sent as `1000000`). The IPN returns the same multiplied value, so it is divided by 100 before it is compared to the order. |
 | `vnp_SecureHash` | `HMAC-SHA512(secretKey, hashData)`, lowercase hex, 128 characters. `hashData` is the alphabetically sorted (`ksort`) list of the non-empty parameters, URL-encoded, joined with `&`. The hash fields are excluded. |
 | `vnp_CreateDate`, `vnp_ExpireDate` | `yyyyMMddHHmmss` in **GMT+7**. |
-| `vnp_NotifyUrl` | where the gateway sends the server-to-server notification. **Not optional**: without it VNPay has no way to deliver the IPN, and the order stays `PENDING_PAYMENT` forever. |
+| `vnp_TxnRef` | the order reference. **`Alphanumeric[1,100]`**: the dashes of the order's UUID are not allowed, so the order stores its own reference (`orders.gateway_ref`, the UUID without dashes) and that is what is sent and what an incoming notification is matched on. |
+| `vnp_OrderInfo` | **`Alphanumeric[1,100]`, unaccented**: no Vietnamese diacritics, no special characters. The text is normalised (`toVnSafeText`) before it is sent. |
+| `vnp_IpAddr` | the **buyer's** address, `Alphanumeric[7,45]`. An IPv6 address or a loopback `::1` does not fit, so the address is normalised into a plain IPv4 (`normalizeClientIp`). |
+| `vnp_TmnCode` | the merchant code, max **8** characters. |
+| `vnp_NotifyUrl` | **not sent.** VNPay's `pay` request does not accept it: the IPN URL is registered once in the merchant portal. An unknown parameter also ends up in the signed hash, so sending one makes our signature disagree with the gateway's. |
 | Success | `vnp_ResponseCode == '00'` **and** `vnp_TransactionStatus == '00'`. |
-| The IPN request | a **GET** with the parameters in the query string. The reply is HTTP 200 with `{"RspCode":"00","Message":"..."}`. |
+| The IPN request | a **GET** with the parameters in the query string (the endpoint also accepts `POST`, for convenience). The reply is HTTP 200 with `{"RspCode":"00","Message":"..."}`. |
 | RspCode | `00` success, `01` order not found, `02` already confirmed, `04` invalid amount, `97` invalid signature, `99` invalid request. |
+| `querydr` | the server-to-server API (`POST https://sandbox.vnpayment.vn/merchant_webapi/api/transaction`) that asks the gateway for the authoritative status of a transaction. Used as a **fallback** when the IPN never arrives - see [section 3](#3-how-gateway-callbacks-reach-the-app-locally). |
 
 The signing algorithm lives in **one** file
 (`apps/api/src/payments/vnpay-crypto.ts`) and is shared by the real
@@ -241,13 +246,16 @@ amount multiplied by 100, HMAC-SHA512, notification over GET - so the code
 that talks to the real sandbox is the code that talks to the mock. A mock
 with a different contract would hide bugs rather than expose them.
 
-That is not a theoretical concern: `vnp_NotifyUrl` was missing from the
-real provider while the mock had it, and because the mock takes the notify
-address from a form attribute instead of the query string, the whole test
-suite stayed green while the real gateway would never have known where to
-deliver the IPN. `apps/api/test/provider.test.ts` now asserts that both
-providers send the same parameter set, so a mock that is more forgiving
-than the real thing cannot hide a gap again.
+That is not a theoretical concern: the parameter set of the two providers was
+compared against the official table, and `vnp_NotifyUrl` was found to be
+**not part of the specification** - the real provider no longer sends it,
+because the IPN URL is registered statically in the merchant portal. The
+mock had to be changed to match (it takes the notify address from a form
+attribute instead of the query string, so it never needed the parameter in
+the first place). `apps/api/test/provider.test.ts` asserts that both
+providers send the same parameter set and that neither sends
+`vnp_NotifyUrl`, so a mock that is more forgiving than the real thing
+cannot hide a gap again.
 
 ### Credentials
 
@@ -266,11 +274,18 @@ Send the credentials to the reviewers separately, as requested.
 
 Until you have credentials, the app runs with `MOCK_GATEWAY=true`: a small
 local simulator that follows the same contract (redirect to a payment page,
-then POST a correctly signed payload to the same IPN endpoint). It exists so
+then send a correctly signed payload to the same IPN endpoint). It exists so
 the repository can be cloned and run by anyone in one command.
 
 **It is a development aid, not a payment gateway**, and it is listed under
-"not production ready" below.
+"not production ready" below. The page is clearly labelled
+(*"Trang thanh toán MÔ PHỎNG - không phải VNPay"*) and carries no real
+brand names: a local simulator that looks like the real gateway is a trap
+for anyone reviewing the flow.
+
+Because VNPay's `pay` request does not carry the notify address, the mock
+takes it under its own name (`mock_notify`) instead of `vnp_NotifyUrl`, so
+the mock cannot pollute the signed `vnp_` parameter set.
 
 ---
 
@@ -293,22 +308,28 @@ PUBLIC_BASE_URL=https://random-words.trycloudflare.com
 ```
 
 and restart the API (`docker compose up -d api`). That URL is what the app
-sends to the gateway as `vnp_NotifyUrl`.
+uses for `vnp_ReturnUrl` and for the IPN endpoint - which you then have to
+**register in the VNPay merchant portal**, because VNPay's `pay` request
+does not carry the notify address.
 
 ### Option B - ngrok
 
 ```bash
 ngrok http 3101
-export PUBLIC_BASE_URL=$(ngrok url 3101 | ...)
 ```
+
+The public URL is printed by ngrok; put it into `PUBLIC_BASE_URL` and
+restart the API.
 
 ### Verifying locally
 
 The IPN endpoint is:
 
 ```
-POST {PUBLIC_BASE_URL}/api/ipn/vnpay
+GET {PUBLIC_BASE_URL}/api/ipn/vnpay
 ```
+
+(POST works too, but VNPay notifies with a GET.)
 
 It answers with HTTP 200 and a JSON body, always - that is what makes the
 gateway stop retrying:
@@ -371,10 +392,11 @@ on the page is rendered for that user.
 | --- | --- |
 | **Sự kiện** (`/`) | The event list. Every card shows the venue, the start time, how many tickets are left and how many listings it has. The price model is explained at the bottom of the page. |
 | **Sự kiện → một sự kiện** (`/events/<id>`) | The listings of one event. Each listing is a checkout form: pick a quantity, see the fee breakdown update live, press **Thanh toán**. |
-| **Kết quả thanh toán** (`/orders/<id>`) | The order status, the money split and every IPN the gateway sent for this order. The page polls the API every 3 seconds while the order is still waiting for the gateway. |
-| **Ví của tôi** (`/wallet`) | The acting user's wallet: money waiting for release (escrow), money available to withdraw, and the transaction history. |
+| **Đơn hàng** (`/orders`) | The acting user's own orders, newest first: what they bought (or, for a seller, what they sold). The orders that still need attention come first. Without this the order page is only reachable by the URL the gateway redirects to. |
+| **Kết quả thanh toán** (`/orders/<id>`) | The order status, the money split and every IPN the gateway sent for this order. The page polls the API every 3 seconds while the order is still waiting for the gateway, and a pending order can be cancelled here. |
+| **Ví của tôi** (`/wallet`) | The acting user's wallet: money waiting for release (escrow), money available to withdraw, money the platform owes back to them (*Tiền phải hoàn*), and the transaction history. |
 | **Lịch sử giao dịch** (`/ledger`) | The platform-wide double-entry journal: the balance of every account and every posted entry. |
-| **Quản trị** (`/admin`) | The operations dashboard. Only shown to the `admin` role. It also has **Tạo sự kiện mới**, so fresh tickets can be put on sale when the seeded ones are sold out. |
+| **Quản trị** (`/admin`) | The operations dashboard. Only shown to the `admin` role. It also has **Tạo sự kiện mới**, so fresh tickets can be put on sale when the seeded ones are sold out, and it names the orders the operator has to refund (the total alone is not enough - each one is a separate refund call to the gateway). |
 
 **Reading the money model.** The buyer pays the listing price plus a 10%
 service fee; the seller receives the price minus 5%; the platform keeps the
@@ -383,6 +405,11 @@ service fee; the seller receives the price minus 5%; the platform keeps the
 - **Chờ giải ngân** - the money is at the gateway but still owed to the
   seller. It only moves to *Khả dụng* when the event is completed.
 - **Khả dụng** - released, ready to withdraw.
+- **Tiền phải hoàn** - money the platform owes *this user* back, because a
+  payment arrived for an order that could no longer be fulfilled (a late
+  payment, a second payment, an order cancelled by the event completion).
+  It is booked on a per-buyer account, so the buyer sees it on their own
+  wallet instead of it disappearing into a platform-wide total.
 
 **Why the buyer is redirected to a gateway and nothing happens yet.** The
 **Thanh toán** button only creates an order in `PENDING_PAYMENT` state and
@@ -411,7 +438,8 @@ dashboard and the ledger can never disagree. Click an account code to expand
 it, or press **Chép** to copy the full code.
 
 **The mock gateway.** `MOCK_GATEWAY=true` (the default) mounts `/mock-pay`,
-a fake VNPay page. It has two buttons: **Thanh toán** (succeeds) and **Thanh
+a clearly labelled **simulation** page - it is not VNPay and it moves no
+real money. It has two buttons: **Thanh toán** (succeeds) and **Thanh
 toán thất bại (mô phỏng)** (declines). Both sign the payload with the same
 HMAC-SHA512 routine the real gateway uses, so the IPN that arrives at our
 own endpoint is indistinguishable from a real one. Use the failing button to
@@ -447,7 +475,15 @@ platform fee      300,000
 | `asset:gateway_cash` | asset | money held at the payment gateway |
 | `liability:user:{id}:pending` | liability | seller's money, still escrowed |
 | `liability:user:{id}:available` | liability | seller's money, released |
+| `liability:user:{id}:refund` | liability | money the platform owes **that buyer** back (a late payment, a second payment, a cancelled order) |
 | `revenue:platform_fee` | revenue | fees kept by the platform |
+
+> The refund account is **per buyer**, not one global `liability:refund_payable`.
+> A global account would balance the books, but the buyer would see 0 in
+> their wallet while the platform was holding their money. The old global
+> account is kept in the chart for the historical entries, and a migration
+> (`moveRefundsToBuyerAccounts`) moves any legacy balance onto the right
+> buyer's account with a balanced `REFUND_REASSIGN` journal entry.
 
 ### The two postings
 
@@ -476,6 +512,7 @@ There is no balance column anywhere in the schema. The UI reads:
 ```
 pending   = SUM(credit) - SUM(debit)  over liability:user:{id}:pending
 available = SUM(credit) - SUM(debit)  over liability:user:{id}:available
+refund    = SUM(credit) - SUM(debit)  over liability:user:{id}:refund
 ```
 
 `GET /api/ledger/audit` re-checks that every transaction satisfies
@@ -513,7 +550,7 @@ PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEAS
 - **Every successful payment books the money.** If the order can still be
   fulfilled it is a normal capture; if it cannot (it was declined, expired,
   or the event was completed), the amount is booked as
-  `liability:refund_payable` - money owed back to the buyer - and the
+  `liability:user:{buyer}:refund` - money owed back to the buyer - and the
   reserved ticket is returned to the listing. A notification is never
   accepted and then dropped on the floor.
 
@@ -521,9 +558,15 @@ PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEAS
   result page reads the persisted status and polls it. If the IPN has not
   arrived yet the order honestly shows "waiting for the gateway".
 - The IPN handler is **idempotent**: the `payments` table has
-  `UNIQUE (provider, provider_txn_id)`, and the order row is locked with
-  `FOR UPDATE` before the posting, so a repeated or concurrent notification
-  can never book the money twice.
+  `UNIQUE (provider, order_id, provider_txn_id)`, the order row is locked
+  with `FOR UPDATE` before the posting, and a partial unique index
+  (`payments_succeeded_txn_uniq` on `(provider, provider_txn_id) WHERE
+  status = 'SUCCEEDED'`) blocks a *successful* transaction id from being
+  booked twice. The per-order constraint catches a replay of the same
+  notification; the partial index catches the same gateway transaction id
+  arriving on a *different* order. The status filter matters: a declined
+  payment is reported with `vnp_TransactionNo = "0"`, so an unconditional
+  index would make every second decline collide.
 - The IPN is rejected (no ledger write) if the signature does not match, if
   the amount differs from the order, or if the order is unknown. The
   rejection codes follow the official list: `97` invalid signature, `01`
@@ -544,6 +587,42 @@ PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEAS
   with no way out.
 - When an event is completed, any order still in `PENDING_PAYMENT` is
   cancelled and its reserved tickets are returned to the listing.
+- **The `409` alone is not enough - the event row is locked.** The
+  rejection above closes the *steady state* ("the event is already
+  completed"), but not the *race*: the checkout could read
+  `events.status = 'scheduled'`, then the operator completes the event and
+  releases the escrow, and only then does the checkout insert its order.
+  The buyer pays into an escrow that will never be released - the money is
+  trapped with no way out. So both sides lock the same row:
+
+  ```
+  checkout:   SELECT status FROM events WHERE id = $1 FOR SHARE   (shared)
+  release:    SELECT id, status FROM events WHERE id = $1 FOR UPDATE (exclusive)
+  ```
+
+  A shared lock blocks an exclusive one, so the two transactions
+  serialise: either the checkout sees `completed` and refuses, or the
+  release waits for the checkout and then includes its order in the
+  escrow. `test/race.test.ts` proves the lock directly (a second
+  connection with a short `lock_timeout` must be blocked), not by hoping
+  for a lucky interleaving.
+
+- **The lock order is the same on both sides.** The checkout locks the
+  *event* row first and the *listing* row second; the release locks the
+  *event* row first and the order rows second. If the two locked them in
+  opposite orders the database would deadlock:
+
+  ```
+  checkout                     escrow release
+  ---------------------------  ---------------------------
+  holds the listing row        holds the event row
+  wants the event row (SHARE)  wants the listing row (UPDATE)
+  ```
+
+  Postgres would detect it and kill one of the two transactions - the
+  buyer would see a failed checkout, or the escrow would not be released.
+  `test/race.test.ts` runs the two against each other eight times to
+  prove no deadlock happens.
 
 ### Ticket reservation and the late payment
 
@@ -563,18 +642,75 @@ The buyer paid, but the tickets were already sold to somebody else, so:
 
 - the seller must **not** receive the money (the buyer has no ticket),
 - but the buyer did pay, so the amount is booked as
-  `Dr asset:gateway_cash / Cr liability:refund_payable`,
+  `Dr asset:gateway_cash / Cr liability:user:{buyer}:refund`,
 - and the order becomes `REFUND_REQUIRED`.
 
 The refund itself (calling VNPay's refund API) is out of scope for this
-test task, so the money stays in `liability:refund_payable` until an
-operator refunds it. The admin dashboard shows that figure.
+test task, so the money stays in `liability:user:{buyer}:refund` until an
+operator refunds it. The buyer sees it on their own wallet page
+(*Tiền phải hoàn*), and the admin dashboard shows the total.
 
 There is a subtle case here that the e2e test covers explicitly: the lazy
 sweep may have already marked the order `EXPIRED` before the IPN arrives.
 The IPN handler therefore treats `EXPIRED` exactly like an expired
 `PENDING_PAYMENT` - it must still settle the money, never silently drop
 it.
+
+The same case has to be reachable from the *other* direction as well: if
+the IPN is lost (the tunnel was closed, the notify URL was not
+registered, the gateway could not reach us) the buyer's money is sitting
+at the gateway while the order says `EXPIRED`. The re-check button
+therefore asks the gateway (`querydr`) about a `PENDING_PAYMENT` **and**
+about an `EXPIRED` order - the sweep released the *ticket*, but it says
+nothing about the money. Without this the money would be stranded at the
+gateway with no way to find it again. The settled orders (`PAID`,
+`RELEASED`, `FAILED`, `CANCELLED`, `REFUND_REQUIRED`) are never re-checked:
+their money is already booked, so a second answer would only duplicate it.
+The rule lives in `canQueryGateway()` (`services/orders.ts`) and is
+asserted in `test/gaps.test.ts`.
+
+**A `querydr` answer may never cancel an order.** The query answers
+"did this transaction succeed?", and a payment that the gateway has not
+seen yet is reported as *not found* (code `04`) - that is not a failure,
+the buyer is simply still on the payment page. If such an answer were
+applied like a notification, the order would be marked `FAILED` and the
+tickets given back *while the buyer is paying*: the money would arrive
+afterwards for an order that is no longer pending, and it would be booked
+as a late payment instead of a purchase. So the query is only ever used
+to **recover a success** that was lost on the way here - a success without
+a transaction number is refused too, because an invented number would
+make the real IPN look like a *second* payment and refund the buyer for
+money that was only ever paid once. The rule lives in
+`decideQueryOutcome()` (`services/orders.ts`) and is asserted in
+`test/gaps.test.ts`.
+
+The `querydr` call itself has a **10 second timeout** (`fetch` +
+`AbortSignal.timeout`), so a hung gateway cannot hold the order page
+open; the re-check then simply reports the persisted status.
+
+### The wallet only shows the user's own transactions
+
+The wallet used to take the last 50 transactions of the *whole platform*
+and then keep the ones whose account code contained the user's id, in
+JavaScript. On a busy platform the user's own entries fall outside that
+window and simply disappear from their wallet - with no error, just
+missing money. The filter is done in the database now
+(`listTransactionsForUser`), so the limit applies to *the user's*
+transactions.
+
+### Two limits the payment gateway imposes
+
+- **`vnp_Amount` is capped at 12 characters.** The wire value is the
+  amount multiplied by 100, so an order above ~10 billion VND cannot be
+  sent to the gateway at all. Such an order is refused in `createOrder`
+  with a clear message, rather than sending the buyer to a payment page
+  that would never work.
+- **A ticket has to cost something.** The ledger rejects a zero-amount
+  posting (`CHECK (amount_vnd > 0)` on the entries, a positive
+  transaction total), so a free ticket could never be captured: the buyer
+  would be charged for a ticket that was never booked. The price is
+  refused in the schema (`CHECK (price_vnd > 0)`), in the zod schema and
+  in `createOrder`.
 
 ---
 
@@ -589,10 +725,12 @@ packages/shared/            money helpers, fee model, zod schemas, unit tests
   src/account-code.ts      shortening an account code for display
   src/ledger-labels.ts     the Vietnamese headline of a journal entry
   src/datetime.ts          Vietnam-time formatting (fixed +07:00 offset)
+  src/vn.ts                the VNPay text rules (unaccented text, alphanumeric ref)
   src/schemas.ts           the zod schemas shared by the API and the web
 apps/api/
   src/db/                   schema.sql, migrate, seed, accounts, isolated
   src/db/legacy-text.ts     repairs names written without Vietnamese diacritics
+                            (and moves the legacy refunds onto the buyer's account)
   src/services/ledger.ts    double-entry posting, balances, audit
   src/services/orders.ts    order lifecycle, IPN handling, escrow release
   src/services/admin.ts     the operations dashboard aggregates
@@ -614,15 +752,19 @@ apps/api/
     http.test.ts           the HTTP surface and the response codes
     create-event.test.ts   creating a new event and its listings
     invariants.test.ts     the money invariants
+    race.test.ts           the checkout vs. event-completion lock race
+    gaps.test.ts           the parts the demo does not click on
     legacy-text.test.ts    the repair of the unaccented names
 apps/web/
   src/app/page.tsx          event list
   src/app/events/[id]/      event page with listings (SSR)
+  src/app/orders/           the user's own orders (SSR)
   src/app/orders/[id]/      payment result page (SSR + status poller)
   src/app/wallet/           pending / available balances
   src/app/ledger/           the journal and all account balances
   src/app/admin/            the operations dashboard (admin only)
-  src/app/actions.ts        server actions: checkout, switch user, create event
+  src/app/actions.ts        server actions: checkout, switch user, cancel
+                            order, create event, complete event
   src/components/           ListingCheckoutForm, AccountCode, CreateEventForm
 scripts/
   dev.sh                    starts the stack, freeing the ports it needs first
@@ -723,7 +865,7 @@ scripts/
 22. **A payment that arrives after the reservation expires is
     `REFUND_REQUIRED`, not `PAID`.** The buyer paid, so the money has to be
     accounted for - but the tickets are gone, so the seller must not get it.
-    It is booked as `liability:refund_payable` until an operator refunds
+    It is booked as `liability:user:{buyer}:refund` until an operator refunds
     it. Dropping the notification would lose the buyer's money; paying the
     seller would be worse.
 23. **A seller cannot buy their own listing** (`409 OWN_LISTING`). The money
@@ -740,6 +882,31 @@ scripts/
     raw IPN log. Every number is derived from the ledger, and the e2e test
     asserts that the dashboard agrees with the journal - the dashboard can
     never become a second source of truth.
+26. **The checkout and the event completion lock the same row.** The
+    checkout takes a shared lock on the event (`FOR SHARE`) and the escrow
+    release takes an exclusive one (`FOR UPDATE`). Without this, a checkout
+    that reads "scheduled" and a completion that releases the escrow can
+    interleave, and the buyer pays into an escrow that will never be
+    released - the money is trapped. A `409` on the checkout would only
+    close half of the window; the lock closes it.
+27. **The order has its own gateway reference.** `vnp_TxnRef` must be
+    alphanumeric, so the UUID (which contains dashes) cannot be used. The
+    order keeps its UUID *and* a `gateway_ref`; the notification is
+    matched on the reference, with the UUID accepted as a fallback.
+28. **A lost IPN is recovered with the `querydr` API.** The buyer's browser
+    comes back from the gateway, but the server-to-server notification can
+    be lost (the tunnel was closed, the URL was not registered). The
+    re-check button asks the gateway for the authoritative status of the
+    transaction and applies it only if the answer is correctly signed and
+    the amount matches. If the gateway cannot be reached, the order simply
+    keeps waiting - a failed check is never treated as a payment.
+29. **The refund liability is per buyer.** A global account balances the
+    books but hides the money from the person it is owed to. The per-buyer
+    account is what lets the wallet show *Tiền phải hoàn*.
+30. **The mock gateway is clearly labelled as a simulation** and carries no
+    real brand names. It speaks the same wire format, so the code that
+    talks to the sandbox is the code that talks to the mock, but it never
+    pretends to be the real thing.
 
 ---
 
@@ -753,18 +920,25 @@ Honest list:
   can call it. Production needs real sessions and a role check on every
   mutating endpoint.
 - **The mock gateway** must be switched off; it accepts any payment.
-- **IPN replay protection is partial.** The unique constraint makes the
+- **IPN replay protection is partial.** The unique constraints make the
   *effect* of a replay idempotent, but there is no timestamp/nonce window
-  rejecting a stale notification, and no `vnp_ApiUrl` server-to-server
-  confirmation (VNPay supports it - I would add it as a second verification
-  step).
+  rejecting a stale notification. The `querydr` fallback covers the case of
+  a *lost* IPN (the buyer paid, the notification never arrived), but a
+  notification that arrives hours later is still applied.
 - **IPN secrets are not rotated**, and there is no rate limiting on the
   webhook.
 - **No refunds.** The `REFUNDED` payment status exists in the schema but no
   flow produces it. A refund would need a reverse posting and a rule for
   who eats the gateway fee. The late-payment path books the liability
-  (`liability:refund_payable`) but an operator still has to call the
-  gateway's refund API and post the reversing entry by hand.
+  (`liability:user:{buyer}:refund`) but an operator still has to call the
+  gateway's refund API and post the reversing entry by hand. Cancelling a
+  pending order is *not* a refund - it is only possible before the money
+  arrives.
+- **The gateway's `querydr` is only used by the re-check button.** A lost
+  IPN is recovered when the buyer (or an operator) presses it, or when the
+  order page polls. Nothing reconciles the whole order book against the
+  gateway's transaction list on a schedule, so an order nobody ever
+  revisits stays unsettled until a human looks at the dashboard.
 - **No real payouts.** Releasing escrow only moves money between the
   platform's own liability accounts. There is no bank transfer, no KYC, no
   payout batching, and no reconciliation with the gateway's settlement file.
@@ -801,15 +975,23 @@ The repository ships a helper that creates the remote (if needed) and pushes:
 ./scripts/push-to-github.sh
 ```
 
-It defaults to `vogiahuy2506-lang/ticket`; override with
-`REMOTE_REPO=owner/name ./scripts/push-to-github.sh`.
+It needs a target repository. Set `REMOTE_REPO=owner/name` (there is no
+default any more, so the script cannot push to the wrong account by
+accident):
+
+```bash
+REMOTE_REPO=your-account/your-repo ./scripts/push-to-github.sh
+```
 
 ### What I would do next, in order
 
 1. Real auth (session + role) and lock the mutation endpoints, including
    the API ones - right now the role check only exists in the web layer.
-2. Switch on the VNPay sandbox, add the `vnp_ApiUrl` confirmation call, and
-   make the IPN handler the single source of truth for order state.
+2. Switch on the VNPay sandbox, register the IPN URL in the merchant
+   portal, and make the IPN handler the single source of truth for order
+   state. The `querydr` fallback already exists, but it is only triggered
+   by a manual re-check - a background poll would recover a lost
+   notification without waiting for the buyer.
 3. Versioned migrations (node-pg-migrate or Drizzle) + an append-only audit
    log + a hash chain over the journal.
 4. Refund flow with a reverse posting, including who absorbs the gateway fee.
@@ -918,7 +1100,7 @@ Desktop's disk was full, so ports had to be made configurable).
 
   All three are fixed: a successful payment now always books the money. If
   the order can still be fulfilled it is a normal capture; if it cannot, the
-  amount is booked as `liability:refund_payable` (money owed back to the
+  amount is booked as `liability:user:{buyer}:refund` (money owed back to the
   buyer), and the reserved ticket is returned to the listing. The amount is
   now also checked on *every* notification, not only on the success path.
   The e2e script asserts each of the three cases.
@@ -950,6 +1132,71 @@ Desktop's disk was full, so ports had to be made configurable).
   `apps/api/test/provider.test.ts` now asserts that both providers send
   the same parameter set - so a mock that drifts ahead of reality can no
   longer hide a gap.
+- A later, harder pass at the **protocol** - reading the official
+  parameter table instead of the sample code - found **four more
+  mismatches**, all of which would have made the sandbox reject the
+  payment:
+  - **`vnp_NotifyUrl` does not exist in the `pay` request.** The IPN URL is
+    registered statically in the merchant portal. Sending it was not just
+    useless, it was *harmful*: an unknown parameter goes into the signed
+    hash, so our signature would not match the gateway's. The parameter is
+    now removed from the request and from the hash, and the notify address
+    is only kept in the configuration (so it can be shown to the operator
+    and registered).
+  - **`vnp_TxnRef` must be `Alphanumeric[1,100]`.** The order's UUID has
+    dashes, so the order now stores its own gateway reference
+    (`orders.gateway_ref`, the UUID without the dashes) and the IPN is
+    matched on it. The UUID is still accepted as a fallback, so an
+    operator can look an order up by either.
+  - **`vnp_OrderInfo` must be unaccented and free of special
+    characters.** The description is normalised with `toVnSafeText` before
+    it is sent.
+  - **`vnp_IpAddr` must be `Alphanumeric[7,45]`.** The API sits behind the
+    storefront, so `req.ip` is the *storefront's* address - an IPv6
+    loopback (`::1`), too short for the field. The storefront now forwards
+    the buyer's real address in `x-forwarded-for`, and the value is
+    normalised into a plain IPv4.
+
+  The mock gateway was changed to match, and the provider test now checks
+  the parameter set against the official specification instead of against
+  the implementation.
+- The same pass found **a race between the checkout and the completion of
+  the event**. The checkout read the event's status *without locking the
+  row*, while the escrow release locked the orders but not the event. So
+  this interleaving was possible: the checkout reads
+  `events.status = 'scheduled'` -> the operator completes the event and
+  releases the escrow -> the checkout inserts an order for an event that is
+  already over -> the buyer pays and the money goes into the seller
+  escrow -> nothing ever releases it, because the event was completed in
+  step 2. The money was trapped with no way out. Fixed by locking the
+  event row on **both** sides: the checkout takes a shared lock
+  (`FOR SHARE`) and the release takes an exclusive one (`FOR UPDATE`), so
+  the two can never hold the same row at the same time. `test/race.test.ts`
+  proves the lock directly rather than relying on a lucky interleaving.
+- The refund liability was **one global account**
+  (`liability:refund_payable`), which balanced the books but left the
+  buyer unable to see what the platform owed them - their wallet showed 0
+  while their money was sitting in the platform's ledger. It is now a
+  **per-buyer** account (`liability:user:{id}:refund`), so the wallet can
+  show *Tiền phải hoàn*. A migration moves any legacy balance onto the
+  right buyer's account with a balanced `REFUND_REASSIGN` entry.
+- The idempotency constraint on `payments` was `UNIQUE (provider,
+  provider_txn_id)`. That is too strong for a decline, because VNPay
+  reports a declined payment with `vnp_TransactionNo = "0"` - every
+  second decline in the whole system would collide. It is now `UNIQUE
+  (provider, order_id, provider_txn_id)` (a replay of the same
+  notification for the same order) plus a partial unique index on
+  `(provider, provider_txn_id) WHERE status = 'SUCCEEDED'` (the same
+  successful transaction id on a *different* order). The status filter is
+  what keeps the two rules from fighting each other.
+- `ensureUserAccounts` was called with the seller's **UUID** where a name
+  was expected, so every per-user account was labelled with a raw UUID
+  instead of a human-readable name. The name is now looked up.
+- The mock gateway was branded: it carried the logos and wordmarks of real
+  payment brands and called itself "VNPay sandbox". It is now clearly
+  labelled as a **simulation** ("Trang thanh toán MÔ PHỎNG - không phải
+  VNPay") with generic marks, because a local simulator that looks like
+  the real gateway is a trap for anyone reviewing the flow.
 
 ---
 
@@ -979,7 +1226,7 @@ There are three layers, and each one covers what the others cannot.
 
 ### Integration tests (a real database)
 
-`npm run test:api` - 74 tests that run against a real Postgres, in a
+`npm run test:api` - 113 tests that run against a real Postgres, in a
 **private schema per test file** that is dropped afterwards. The
 developer's own database is never touched, and the tests can be run as
 often as you like.
@@ -992,6 +1239,8 @@ and still be safe.
 | File | What it covers |
 |---|---|
 | `test/orders.test.ts` | the checkout rules: an invalid quantity, an unknown listing, a seller buying their own ticket, a completed event, not enough tickets left, the `Idempotency-Key` (same order, and scoped per buyer), two buyers racing for the last ticket, eight buyers racing for three tickets, and the expiry sweep |
+| `test/race.test.ts` | the race between a checkout and the completion of the event: the checkout must hold a **shared** lock (`FOR SHARE`) on the event row, the escrow release an **exclusive** one (`FOR UPDATE`), so the two can never interleave. The test proves the lock directly (with a `lock_timeout`), not by hoping for a lucky interleaving, asserts the invariant that no order of a completed event is left `PENDING_PAYMENT`, and runs the two against each other eight times to prove the **lock order** is the same on both sides (a different order would deadlock) |
+| `test/gaps.test.ts` | the parts the demo does not click on: the wallet must show the user's own transactions even when 60 other transactions follow theirs (the filter runs in the database, not in JavaScript), the gateway must be asked about an `EXPIRED` order and never about a settled one, a `querydr` answer may never cancel an order that is still being paid, the shared status labels must know every status the database accepts, the order list must show a user their own orders (and nobody else's), a pending order can be cancelled and the tickets go back on sale, the dashboard must name the orders the operator has to refund, and an unknown event is a 404 rather than a 500 |
 | `test/ipn.test.ts` | the gateway notification: a normal capture, the same notification twice, a declined payment, a wrong amount, a late payment, and a second payment for an order that was already paid, released or refunded |
 | `test/http.test.ts` | the HTTP surface: every rejection code (`400`, `404`, `409`), the IPN response codes (`01`, `02`, `04`, `97`, `99`), the escrow release, the cancellation of unpaid orders, the reconciliation log, and the append-only guarantee |
 | `test/invariants.test.ts` | the money invariants over a wide grid of prices and quantities, and a long run of buy-pay-release cycles that must end perfectly solvent |
@@ -1004,12 +1253,15 @@ section 8).
 ### Provider tests (no database)
 
 `apps/api/test/provider.test.ts` - the redirect request that is sent to the
-gateway. It asserts that `vnp_NotifyUrl` (the IPN callback address) is
-present, that the amount is multiplied by 100, that the request is signed,
-and that the real provider and the local mock send the **same** parameter
-set. That last assertion is the important one: the mock used to be more
-forgiving than the real gateway, which is how a missing `vnp_NotifyUrl`
-survived a fully green test suite.
+gateway. It asserts the parameter set against the **official VNPay
+specification**: the amount is multiplied by 100, the request is signed,
+`vnp_TxnRef` is alphanumeric, `vnp_OrderInfo` is unaccented,
+`vnp_IpAddr` is a normalised IPv4, `vnp_TmnCode` is at most 8 characters -
+and that **neither provider sends `vnp_NotifyUrl`**, because the real
+gateway does not accept it. It also asserts that the real provider and the
+local mock send the **same** parameter set. That last assertion is the
+important one: the mock used to be more forgiving than the real gateway,
+which is how a protocol mismatch could survive a fully green test suite.
 
 ### End-to-end (the real HTTP flow)
 
@@ -1036,20 +1288,23 @@ be run as often as you like:
 14. the lazy sweep expires an abandoned reservation -> the order becomes
     `EXPIRED` and the ticket goes back to the listing
 15. an IPN that arrives *after* the sweep -> the order becomes
-    `REFUND_REQUIRED`, the money is booked as `liability:refund_payable`
-    (not as seller escrow), and the ledger stays balanced
+    `REFUND_REQUIRED`, the money is booked as
+    `liability:user:{buyer}:refund` (not as seller escrow), and the ledger
+    stays balanced
 16. a decline followed by a **successful retry** -> the money is booked as
-    `liability:refund_payable` (it must not disappear)
+    `liability:user:{buyer}:refund` (it must not disappear)
 17. a late payment that arrives *before* the sweep -> the order becomes
     `REFUND_REQUIRED` **and the reserved ticket goes back to the listing**
 18. a payment for an order that was cancelled by the event completion ->
-    the money is booked as `liability:refund_payable`
+    the money is booked as `liability:user:{buyer}:refund`
 19. a **second** payment for an order that was already paid -> the money
-    reaches the gateway cash and is booked as `liability:refund_payable`
+    reaches the gateway cash and is booked as `liability:user:{buyer}:refund`
     (the seller must not be paid twice)
 20. the admin dashboard agrees with the journal, number for number
 21. every raw notification is logged in `payment_events`, including a
     rejected one (bad signature -> `RspCode 97`, and it is still logged)
+22. the buyer's own wallet shows the money owed back to them (the per-buyer
+    refund account), not just the platform total
 
 ---
 

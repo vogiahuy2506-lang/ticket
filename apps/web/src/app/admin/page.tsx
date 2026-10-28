@@ -255,6 +255,46 @@ export default async function AdminPage() {
         )}
       </section>
 
+      {/* ------------------------------------------ orders to refund */}
+      <section className="space-y-3">
+        <SectionTitle
+          title="Đơn hàng cần hoàn tiền"
+          hint="Từng đơn ở đây là một lần gọi hoàn tiền tới cổng thanh toán. Tổng tiền ở trên là số dư nợ của sàn."
+        />
+        {overview.refundOrders.length === 0 ? (
+          <EmptyState
+            title="Không có đơn hàng nào cần hoàn tiền"
+            hint="Mọi khoản đã thu đều được quyết toán với người mua."
+          />
+        ) : (
+          <div className="card overflow-hidden p-0">
+            <ul className="divide-line">
+              {overview.refundOrders.map((o) => (
+                <li
+                  key={o.orderId}
+                  className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      href={`/orders/${o.orderId}`}
+                      className="font-mono text-xs font-semibold text-brand-700 underline-offset-4 hover:underline"
+                    >
+                      {o.orderId.slice(0, 8)}
+                    </Link>
+                    <p className="mt-0.5 truncate text-xs text-ink-500">
+                      {o.eventName} · {o.buyerName}
+                    </p>
+                  </div>
+                  <span className="table-num text-sm font-semibold text-rose-700">
+                    {formatVnd(o.grossVnd)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
       {/* ------------------------------------------ per-seller escrow */}
       <section className="space-y-3">
         <SectionTitle

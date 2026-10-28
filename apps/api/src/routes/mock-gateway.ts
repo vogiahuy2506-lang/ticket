@@ -10,87 +10,43 @@ function escapeHtml(v: string | undefined): string {
 }
 
 /**
- * Brand marks.
+ * Card and wallet marks.
  *
  * These are drawn as inline SVG rather than shipped as image files, so the
  * page stays a single self-contained response and nothing depends on a
  * CDN or a local static asset.
  *
- * The card-brand marks (Visa, Mastercard, Napas, JCB) are close
- * reproductions of the real wordmarks: correct colours, correct letter
- * shapes, correct proportions. They are trademarks of their owners and
- * are used here only to make the sandbox page look like a real checkout.
+ * They are *generic* marks, not the real trademarks. An earlier version of
+ * this page reproduced the actual Visa / Mastercard / Napas / JCB / MoMo /
+ * ZaloPay wordmarks and titled itself "VNPay sandbox" - which made a local
+ * simulator look like the real gateway, and put someone else's trademarks
+ * on a page they do not own. A simulator should look like a simulator,
+ * clearly labelled as one.
  */
-const BRAND_SVG = (viewBox: string, body: string, extra = '') =>
-  `<svg viewBox="${viewBox}" role="img" aria-hidden="true" ${extra}>${body}</svg>`;
 
-/** Visa: the blue italic wordmark. */
-const VISA = BRAND_SVG(
-  '0 0 48 16',
-  '<text x="24" y="13" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" ' +
-    'font-size="16" font-weight="800" font-style="italic" letter-spacing="-0.6" ' +
-    'fill="#1A1F71">VISA</text>',
-);
+/** A generic card mark. */
+const CARD_MARK = `<svg viewBox="0 0 48 16" role="img" aria-hidden="true">
+  <rect x="0.5" y="0.5" width="47" height="15" rx="3" fill="none" stroke="#94a3b8"/>
+  <text x="24" y="11" text-anchor="middle" font-family="Helvetica,Arial,sans-serif"
+    font-size="7" font-weight="700" fill="#64748b">CARD</text>
+</svg>`;
 
-/**
- * Mastercard: the two interlocking discs. The lens in the middle is a
- * separate path filled with a gradient, which is how the real mark
- * renders the overlap.
- */
-const MASTERCARD = BRAND_SVG(
-  '0 0 48 30',
-  '<defs><linearGradient id="mcg" x1="0" y1="0" x2="1" y2="0">' +
-    '<stop offset="0" stop-color="#EB001B"/><stop offset="1" stop-color="#F79E1B"/>' +
-    '</linearGradient></defs>' +
-    '<circle cx="18" cy="15" r="12" fill="#EB001B"/>' +
-    '<circle cx="30" cy="15" r="12" fill="#F79E1B"/>' +
-    '<path d="M24 4.608 A12 12 0 0 1 24 25.392 A12 12 0 0 1 24 4.608 Z" fill="url(#mcg)"/>',
-);
+/** A generic wallet mark. */
+const WALLET_MARK = `<svg viewBox="0 0 52 18" role="img" aria-hidden="true">
+  <rect x="0.5" y="0.5" width="51" height="17" rx="8.5" fill="none" stroke="#94a3b8"/>
+  <text x="26" y="12.5" text-anchor="middle" font-family="Helvetica,Arial,sans-serif"
+    font-size="9" font-weight="700" fill="#64748b">WALLET</text>
+</svg>`;
 
-/** Napas: the domestic Vietnamese card network. */
-const NAPAS = BRAND_SVG(
-  '0 0 52 18',
-  '<rect x="0.5" y="0.5" width="51" height="17" rx="3" fill="#C8102E"/>' +
-    '<text x="26" y="13" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" ' +
-    'font-size="10.5" font-weight="800" letter-spacing="0.8" fill="#fff">NAPAS</text>',
-);
+/** A generic bank-transfer mark. */
+const BANK_MARK = `<svg viewBox="0 0 52 18" role="img" aria-hidden="true">
+  <rect x="0.5" y="0.5" width="51" height="17" rx="3" fill="none" stroke="#94a3b8"/>
+  <text x="26" y="12.5" text-anchor="middle" font-family="Helvetica,Arial,sans-serif"
+    font-size="9" font-weight="700" fill="#64748b">BANK</text>
+</svg>`;
 
-/** JCB: the three green / red / blue blocks. */
-const JCB = BRAND_SVG(
-  '0 0 46 16',
-  '<rect x="0" y="0" width="15" height="16" rx="2" fill="#0E4C96"/>' +
-    '<rect x="15.5" y="0" width="15" height="16" rx="2" fill="#E60012"/>' +
-    '<rect x="31" y="0" width="15" height="16" rx="2" fill="#00A551"/>' +
-    '<text x="23" y="12" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" ' +
-    'font-size="10" font-weight="800" fill="#fff">JCB</text>',
-);
-
-/** MoMo: the pink wallet brand. */
-const MOMO = BRAND_SVG(
-  '0 0 52 18',
-  '<rect x="0.5" y="0.5" width="51" height="17" rx="8.5" fill="#D5006D"/>' +
-    '<text x="26" y="12.5" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" ' +
-    'font-size="11" font-weight="800" letter-spacing="0.2" fill="#fff">MoMo</text>',
-);
-
-/** ZaloPay. */
-const ZALOPAY = BRAND_SVG(
-  '0 0 56 18',
-  '<rect x="0.5" y="0.5" width="55" height="17" rx="3" fill="#0068FF"/>' +
-    '<text x="28" y="12.5" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" ' +
-    'font-size="10" font-weight="700" fill="#fff">ZaloPay</text>',
-);
-
-/** VNPay Wallet, the gateway's own wallet. */
-const VNPAY_WALLET = BRAND_SVG(
-  '0 0 60 18',
-  '<rect x="0.5" y="0.5" width="59" height="17" rx="3" fill="#0B2D5B"/>' +
-    '<text x="30" y="12.5" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" ' +
-    'font-size="9.5" font-weight="800" letter-spacing="0.4" fill="#fff">VNPAY WALLET</text>',
-);
-
-/** Bank brands, for the QR tab's "scan with your banking app" hint. */
-const BANK_BRANDS = ['VietQR', 'MoMo', 'ZaloPay', 'VNPay'];
+/** The payment methods the simulator lists. */
+const PAYMENT_METHODS = ['Card', 'Wallet', 'Bank transfer'];
 
 /**
  * A deterministic pseudo-QR matrix.
@@ -188,11 +144,10 @@ function qrSvg(seed: string, size = 29): string {
       if (grid[r]?.[c]) d += `M${c} ${r}h1v1h-1z`;
     }
   }
-  return BRAND_SVG(
-    `0 0 ${size} ${size}`,
-    `<path d="${d}" fill="#0f172a"/>`,
-    'width="188" height="188" shape-rendering="crispEdges"',
-  );
+  return `<svg viewBox="0 0 ${size} ${size}" role="img" aria-hidden="true"
+    width="188" height="188" shape-rendering="crispEdges">
+    <path d="${d}" fill="#0f172a"/>
+  </svg>`;
 }
 
 /**
@@ -207,12 +162,17 @@ function qrSvg(seed: string, size = 29): string {
  *  - the signature is HMAC-SHA512 over the sorted, URL-encoded parameters
  *  - the notification is sent as a **GET** request, like the real IPN
  *
- * It also *looks* like the real checkout, because a demo that is supposed
+ * It also *looks* like a real checkout, because a demo that is supposed
  * to be judged on its UI should not show a raw debug form. The layout
- * mirrors the VNPay sandbox: a light card on a soft background, the order
- * summary on the left and the payment form on the right, a card number
- * that groups itself in fours, and a disabled "đang xử lý" state while
- * the IPN is in flight.
+ * mirrors a real payment page: a light card on a soft background, the
+ * order summary on the left and the payment form on the right, a card
+ * number that groups itself in fours, and a disabled "đang xử lý" state
+ * while the IPN is in flight.
+ *
+ * The page is clearly labelled as a *simulation*. It is not VNPay and it
+ * uses nobody's trademarks: an earlier version reproduced the real Visa /
+ * Mastercard / MoMo wordmarks and called itself "VNPay sandbox", which
+ * made a local simulator impersonate the real gateway.
  */
 export async function registerMockGatewayRoutes(app: FastifyInstance): Promise<void> {
   const deps = app as unknown as AppDeps;
@@ -233,6 +193,12 @@ export async function registerMockGatewayRoutes(app: FastifyInstance): Promise<v
     const hidden = (name: string, value: string | undefined) =>
       '<input type="hidden" name="' + name + '" value="' + e(value) + '"/>';
 
+    // The notify URL is *not* a `vnp_` parameter: the real gateway takes
+    // the IPN address from the merchant portal, not from the request. The
+    // mock receives it under its own name so that the parameter set of the
+    // redirect stays identical to the real gateway's.
+    const notifyUrl = q.mock_notify ?? q.vnp_NotifyUrl ?? '';
+
     const commonFields = [
       hidden('vnp_Version', q.vnp_Version),
       hidden('vnp_Command', q.vnp_Command),
@@ -244,12 +210,9 @@ export async function registerMockGatewayRoutes(app: FastifyInstance): Promise<v
       hidden('vnp_OrderInfo', q.vnp_OrderInfo),
       hidden('vnp_Locale', q.vnp_Locale),
       hidden('vnp_IpAddr', q.vnp_IpAddr),
-      // The return and notify URLs have to travel with the form: the
-      // script reads the return URL from the form to send the buyer back,
-      // and the notify URL tells it where to send the IPN. Without them
-      // the script throws and the payment never completes.
+      // The return URL has to travel with the form: the script reads it
+      // to send the buyer back.
       hidden('vnp_ReturnUrl', q.vnp_ReturnUrl),
-      hidden('vnp_NotifyUrl', q.vnp_NotifyUrl),
     ].join('\n');
 
     const secret = process.env.MOCK_GATEWAY_SECRET ?? 'mock-secret-local-dev';
@@ -390,10 +353,10 @@ body{
 .topbar{
   max-width:960px; margin:0 auto 20px; display:flex; align-items:center; gap:12px;
 }
-.brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; font-size:19px; color:var(--brand)}
+.brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; font-size:16px; color:var(--ink)}
 .brand-mark{
   width:34px; height:34px; border-radius:9px; display:grid; place-items:center;
-  background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; font-size:17px; font-weight:800;
+  background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; font-size:19px; font-weight:800;
 }
 .brand small{display:block; font-size:11px; font-weight:500; color:var(--muted); letter-spacing:0}
 .sandbox-pill{
@@ -521,12 +484,12 @@ body.is-processing .panel{pointer-events:none; opacity:.85}
       '<!doctype html>',
       '<html lang="vi"><head><meta charset="utf-8"/>',
       '<meta name="viewport" content="width=device-width, initial-scale=1"/>',
-      '<title>Thanh toán - VNPay sandbox</title>',
+      '<title>Trang thanh toán MÔ PHỎNG - không phải VNPay</title>',
       '<style>' + css + '</style>',
       '</head><body>',
       '<div class="topbar">',
-      '  <div class="brand"><span class="brand-mark">V</span><span>VNPay<small>Cổng thanh toán</small></span></div>',
-      '  <span class="sandbox-pill">Môi trường thử nghiệm</span>',
+      '  <div class="brand"><span class="brand-mark">!</span><span>Cổng thanh toán MÔ PHỎNG<small>Không phải VNPay - không có tiền thật</small></span></div>',
+      '  <span class="sandbox-pill">Mô phỏng cục bộ</span>',
       '</div>',
       '<div class="layout">',
 
@@ -544,8 +507,9 @@ body.is-processing .panel{pointer-events:none; opacity:.85}
       '    <div class="row"><span class="k">Mã đơn vị</span><span class="v">' + e(q.vnp_TmnCode) + '</span></div>',
       '    <div class="row"><span class="k">Loại tiền</span><span class="v">VND</span></div>',
       '  </div>',
-      '  <p class="note">Giao dịch được xử lý trên môi trường thử nghiệm, không có tiền thật. ' +
-      'Thông báo thanh toán (IPN) sẽ được gửi về máy chủ của hệ thống, đúng định dạng với VNPay thật.</p>',
+      '  <p class="note"><strong>Đây là trang mô phỏng, không phải VNPay.</strong> ' +
+      'Không có tiền thật và không thẻ nào được thu. Thông báo thanh toán (IPN) được gửi về ' +
+      'máy chủ của hệ thống đúng định dạng của VNPay thật, để luồng xử lý được kiểm thử như thật.</p>',
       '</section>',
 
       // ------------------------------------------------ payment form
@@ -563,7 +527,7 @@ body.is-processing .panel{pointer-events:none; opacity:.85}
       // ---- card panel
       '  <div class="panel-method" id="panelCard">',
       '    <div class="card-preview">',
-      '      <span class="cp-brand">' + VISA + '</span>',
+      '      <span class="cp-brand">' + CARD_MARK + '</span>',
       '      <div class="cp-chip"></div>',
       '      <div class="cp-number" id="cpNumber">4242 4242 4242 4242</div>',
       '      <div class="cp-row">',
@@ -572,9 +536,9 @@ body.is-processing .panel{pointer-events:none; opacity:.85}
       '      </div>',
       '    </div>',
       '    <div class="brand-strip">',
-      '      <span class="lbl">Chấp nhận</span>' + VISA + MASTERCARD + JCB + NAPAS,
+      '      <span class="lbl">Phương thức</span>' + CARD_MARK + WALLET_MARK + BANK_MARK,
       '    </div>',
-      '    <form id="payForm" method="post" data-notify="' + e(q.vnp_NotifyUrl) + '">',
+      '    <form id="payForm" method="post" data-notify="' + e(notifyUrl) + '">',
       commonFields,
       '      <input type="hidden" name="vnp_TransactionNo" value="MOCK' + Date.now() + '"/>',
       '      <input type="hidden" name="vnp_BankCode" value="NCB"/>',
@@ -606,15 +570,13 @@ body.is-processing .panel{pointer-events:none; opacity:.85}
       // ---- wallet panel
       '  <div class="panel-method" id="panelWallet" hidden>',
       '    <div class="wallets">',
-      '      <button type="button" class="wallet" data-pay="1">' + MOMO +
-      '        <span><span class="wt">Ví MoMo</span><br/><span class="ws">Thanh toán bằng số dư ví</span></span><span class="arrow">&rsaquo;</span></button>',
-      '      <button type="button" class="wallet" data-pay="1">' + ZALOPAY +
-      '        <span><span class="wt">ZaloPay</span><br/><span class="ws">Liên kết ví điện tử Zalo</span></span><span class="arrow">&rsaquo;</span></button>',
-      '      <button type="button" class="wallet" data-pay="1">' + VNPAY_WALLET +
-      '        <span><span class="wt">VNPay Wallet</span><br/><span class="ws">Ví điện tử của VNPay</span></span><span class="arrow">&rsaquo;</span></button>',
+      '      <button type="button" class="wallet" data-pay="1">' + WALLET_MARK +
+      '        <span><span class="wt">Ví điện tử</span><br/><span class="ws">Thanh toán bằng số dư ví</span></span><span class="arrow">&rsaquo;</span></button>',
+      '      <button type="button" class="wallet" data-pay="1">' + BANK_MARK +
+      '        <span><span class="wt">Chuyển khoản ngân hàng</span><br/><span class="ws">Quét mã bằng ứng dụng ngân hàng</span></span><span class="arrow">&rsaquo;</span></button>',
       '    </div>',
-      '    <p class="note">Bấm vào ví để hoàn tất thanh toán. Trang sẽ gửi thông báo IPN ' +
-      'tới máy chủ, đúng định dạng với VNPay thật.</p>',
+      '    <p class="note">Bấm vào phương thức để hoàn tất thanh toán. Trang sẽ gửi thông báo IPN ' +
+      'tới máy chủ, đúng định dạng của VNPay thật.</p>',
       '  </div>',
 
       // ---- QR panel
@@ -624,13 +586,13 @@ body.is-processing .panel{pointer-events:none; opacity:.85}
       '      <div class="qr-amount">' + e(amountText) + '</div>',
       '      <div class="qr-hint">Quét mã bằng ứng dụng ngân hàng để thanh toán</div>',
       '      <div class="qr-banks">' +
-      BANK_BRANDS.map((name) => '<span>' + e(name) + '</span>').join('') +
+      PAYMENT_METHODS.map((name) => '<span>' + e(name) + '</span>').join('') +
       '      </div>',
       '    </div>',
       '    <button type="button" class="btn" data-pay="1" data-processing="Đang xử lý...">Tôi đã quét và thanh toán</button>',
       '  </div>',
 
-      '  <form id="failForm" method="post" data-notify="' + e(q.vnp_NotifyUrl) + '">',
+      '  <form id="failForm" method="post" data-notify="' + e(notifyUrl) + '">',
       commonFields,
       '    <input type="hidden" name="vnp_TransactionNo" value="MOCKFAIL' + Date.now() + '"/>',
       '    <input type="hidden" name="vnp_ResponseCode" value="99"/>',

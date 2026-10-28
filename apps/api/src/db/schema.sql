@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS listings (
   title             TEXT NOT NULL,
   quantity_total    INTEGER NOT NULL CHECK (quantity_total > 0),
   quantity_sold     INTEGER NOT NULL DEFAULT 0 CHECK (quantity_sold >= 0),
-  price_vnd         BIGINT NOT NULL CHECK (price_vnd >= 0),
+  price_vnd         BIGINT NOT NULL CHECK (price_vnd > 0),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT listings_sold_within_total CHECK (quantity_sold <= quantity_total)
 );
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS orders (
   event_id          UUID NOT NULL REFERENCES events(id),
   seller_id         UUID NOT NULL REFERENCES users(id),
   quantity          INTEGER NOT NULL CHECK (quantity > 0),
-  unit_price_vnd    BIGINT NOT NULL CHECK (unit_price_vnd >= 0),
+  unit_price_vnd    BIGINT NOT NULL CHECK (unit_price_vnd > 0),
   subtotal_vnd      BIGINT NOT NULL,
   buyer_fee_vnd     BIGINT NOT NULL,
   seller_fee_vnd    BIGINT NOT NULL,
@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS orders (
   platform_fee_vnd  BIGINT NOT NULL,
   status            TEXT NOT NULL CHECK (status IN ('PENDING_PAYMENT', 'PAID', 'RELEASED', 'FAILED', 'CANCELLED', 'EXPIRED', 'REFUND_REQUIRED')),
   gateway           TEXT NOT NULL,
+  -- The reference the payment gateway knows this order by.
+  --
+  -- It is sent as `vnp_TxnRef`, which the parameter table restricts to
+  -- `Alphanumeric[1,100]`, so it cannot be the order's UUID (a UUID has
+  -- dashes). The incoming notification carries this reference, and it is
+  -- what the order is matched on - hence the UNIQUE constraint.
+  gateway_ref       TEXT UNIQUE,
   -- The ticket reservation is only valid for this long. When it passes
   -- the order is EXPIRED and the tickets go back to the listing.
   expires_at        TIMESTAMPTZ NOT NULL,
@@ -59,8 +66,21 @@ CREATE INDEX IF NOT EXISTS orders_buyer_idx ON orders(buyer_id);
 CREATE INDEX IF NOT EXISTS orders_event_idx ON orders(event_id);
 CREATE INDEX IF NOT EXISTS orders_status_idx ON orders(status);
 
--- One row per gateway notification. The unique constraint on
--- (provider, provider_txn_id) is what makes IPN handling idempotent.
+-- One row per gateway notification.
+--
+-- Idempotency needs two constraints, not one:
+--
+--   * `payments_provider_txn_uniq` on (provider, order_id, provider_txn_id)
+--     makes a *replay* of the same notification a no-op.
+--   * `payments_succeeded_txn_uniq` on (provider, provider_txn_id) for the
+--     successful rows only makes a *second real payment* for the same
+--     gateway transaction impossible.
+--
+-- The split matters because VNPay sends `vnp_TransactionNo = "0"` for a
+-- cancelled transaction (response code 24). A single global unique
+-- constraint on (provider, provider_txn_id) would then make the second
+-- cancelled order collide with the first one, and the notification would
+-- be silently treated as a replay.
 CREATE TABLE IF NOT EXISTS payments (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id          UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -70,9 +90,12 @@ CREATE TABLE IF NOT EXISTS payments (
   amount_vnd        BIGINT NOT NULL,
   status            TEXT NOT NULL CHECK (status IN ('PENDING', 'SUCCEEDED', 'FAILED', 'REFUNDED')),
   raw_payload       JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT payments_provider_txn_uniq UNIQUE (provider, provider_txn_id)
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS payments_succeeded_txn_uniq
+  ON payments (provider, provider_txn_id)
+  WHERE status = 'SUCCEEDED';
 
 CREATE INDEX IF NOT EXISTS payments_order_idx ON payments(order_id);
 
@@ -200,3 +223,69 @@ DROP TRIGGER IF EXISTS payment_events_no_update ON payment_events;
 CREATE TRIGGER payment_events_no_update
   BEFORE UPDATE OR DELETE ON payment_events
   FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
+
+-- ---------------------------------------------------------------------
+-- The gateway reference.
+--
+-- `vnp_TxnRef` is `Alphanumeric[1,100]`, so a UUID (which has dashes)
+-- cannot be sent to the gateway. The order keeps its UUID; the reference
+-- the gateway knows it by is the UUID without the dashes, stored next to
+-- it and matched on when a notification arrives.
+-- ---------------------------------------------------------------------
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS gateway_ref TEXT;
+
+-- Backfill the orders that were created before the column existed. The
+-- reference is derived from the UUID, so it is deterministic.
+UPDATE orders
+   SET gateway_ref = replace(id::text, '-', '')
+ WHERE gateway_ref IS NULL;
+
+-- A duplicate would break the UNIQUE constraint, so only the first order
+-- of each reference keeps it. An order without a reference is still
+-- reachable by its UUID, so nothing is lost.
+CREATE UNIQUE INDEX IF NOT EXISTS orders_gateway_ref_uniq
+  ON orders (gateway_ref)
+  WHERE gateway_ref IS NOT NULL;
+
+-- ---------------------------------------------------------------------
+-- The idempotency constraint on `payments` becomes per order.
+--
+-- The old constraint was UNIQUE (provider, provider_txn_id). That works
+-- for a replay of the same notification, but VNPay sends
+-- `vnp_TransactionNo = "0"` for a cancelled transaction, so the second
+-- cancelled order would collide with the first one and its notification
+-- would be treated as a replay. The replay is now scoped to the order,
+-- and a *successful* transaction number stays globally unique.
+-- ---------------------------------------------------------------------
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_provider_txn_uniq;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'payments_provider_txn_uniq'
+  ) THEN
+    ALTER TABLE payments
+      ADD CONSTRAINT payments_provider_txn_uniq
+      UNIQUE (provider, order_id, provider_txn_id);
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- A ticket has to cost something.
+--
+-- The ledger rejects a zero-amount posting (`CHECK (amount_vnd > 0)` on
+-- the entries, and a positive transaction total), so a free ticket could
+-- never be captured: the buyer would be sent to a payment page whose
+-- amount is 0, and the capture would throw - the buyer would be charged
+-- for a ticket that was never booked. The database refuses it instead.
+--
+-- A database that already holds a free listing cannot get the constraint
+-- right away - the migration would fail and take the whole schema down
+-- with it. Those listings are raised to one dong first: they were never
+-- sellable anyway.
+-- ---------------------------------------------------------------------
+UPDATE listings SET price_vnd = 1 WHERE price_vnd <= 0;
+
+ALTER TABLE listings DROP CONSTRAINT IF EXISTS listings_price_positive;
+ALTER TABLE listings
+  ADD CONSTRAINT listings_price_positive CHECK (price_vnd > 0);

@@ -151,7 +151,12 @@ export async function runAssertions(): Promise<void> {
 
   // ------------------------------------------------------------- checkout
   const idemKey = `e2e-${Date.now()}`;
-  const checkout = await json<{ orderId: string; redirectUrl: string; grossVnd: number }>(
+  const checkout = await json<{
+    orderId: string;
+    gatewayRef: string;
+    redirectUrl: string;
+    grossVnd: number;
+  }>(
     '/api/checkout',
     {
       method: 'POST',
@@ -160,7 +165,19 @@ export async function runAssertions(): Promise<void> {
     },
   );
   const orderId = checkout.orderId;
+  const gatewayRef = checkout.gatewayRef;
   console.log(`order ${orderId} created, redirect -> ${checkout.redirectUrl.slice(0, 90)}...`);
+
+  // The reference the gateway knows the order by is alphanumeric, so it is
+  // not the order's UUID - the notification carries it instead.
+  assert(
+    gatewayRef === orderId.replace(/-/g, ''),
+    'the gateway reference is the order id without its dashes',
+  );
+  assert(
+    /^[a-z0-9]+$/.test(gatewayRef),
+    'the gateway reference is alphanumeric, as the parameter table requires',
+  );
 
   const expectedSubtotal = price * quantity;
   const expectedBuyerFee = Math.round((expectedSubtotal * 10) / 100);
@@ -210,14 +227,13 @@ export async function runAssertions(): Promise<void> {
   const payload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(expectedGross * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: orderId,
+    vnp_TxnRef: gatewayRef,
     vnp_OrderInfo: `Thanh toan don hang ${orderId.slice(0, 8)}`,
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2E${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '00',
@@ -306,7 +322,7 @@ export async function runAssertions(): Promise<void> {
     )
   ).listings.find((l) => l.id === listing.id)?.quantity_sold;
 
-  const declineCheckout = await json<{ orderId: string; grossVnd: number }>(
+  const declineCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>(
     '/api/checkout',
     {
       method: 'POST',
@@ -319,14 +335,13 @@ export async function runAssertions(): Promise<void> {
   const declinedPayload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(declineCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: declineOrderId,
+    vnp_TxnRef: declineCheckout.gatewayRef,
     vnp_OrderInfo: `Thanh toan don hang ${declineOrderId.slice(0, 8)}`,
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2EFAIL${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '99',
@@ -372,7 +387,7 @@ export async function runAssertions(): Promise<void> {
   //
   // Before the fix the notification was accepted (RspCode 00) but nothing
   // was posted to the ledger: the buyer's money simply disappeared.
-  const retryCheckout = await json<{ orderId: string; grossVnd: number }>('/api/checkout', {
+  const retryCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>('/api/checkout', {
     method: 'POST',
     headers: { 'idempotency-key': `e2e-retry-${Date.now()}` },
     body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
@@ -380,14 +395,13 @@ export async function runAssertions(): Promise<void> {
   const retryDeclinePayload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(retryCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: retryCheckout.orderId,
+    vnp_TxnRef: retryCheckout.gatewayRef,
     vnp_OrderInfo: 'decline then retry',
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2ERETRYFAIL${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '99',
@@ -403,7 +417,7 @@ export async function runAssertions(): Promise<void> {
     await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
       '/api/ledger/balances',
     )
-  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
 
   const retrySuccessPayload: Record<string, string> = {
     ...retryDeclinePayload,
@@ -426,7 +440,7 @@ export async function runAssertions(): Promise<void> {
     await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
       '/api/ledger/balances',
     )
-  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
   assert(
     refundAfter === refundBefore + retryCheckout.grossVnd,
     `a successful retry books the money as owed to the buyer (${retryCheckout.grossVnd})`,
@@ -445,7 +459,7 @@ export async function runAssertions(): Promise<void> {
   // The sweep runs on checkout and on the event/listing reads, so this test
   // must not call any of those between expiring the order and sending the
   // notification.
-  const leakCheckout = await json<{ orderId: string; grossVnd: number }>('/api/checkout', {
+  const leakCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>('/api/checkout', {
     method: 'POST',
     headers: { 'idempotency-key': `e2e-leak-${Date.now()}` },
     body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
@@ -466,14 +480,13 @@ export async function runAssertions(): Promise<void> {
   const leakPayload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(leakCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: leakCheckout.orderId,
+    vnp_TxnRef: leakCheckout.gatewayRef,
     vnp_OrderInfo: 'late payment without sweep',
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2ELEAK${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '00',
@@ -529,7 +542,7 @@ export async function runAssertions(): Promise<void> {
   //
   // This has to happen while the event is still scheduled: a completed event
   // refuses new checkouts.
-  const lateCheckout = await json<{ orderId: string; grossVnd: number }>('/api/checkout', {
+  const lateCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>('/api/checkout', {
     method: 'POST',
     headers: { 'idempotency-key': `e2e-late-${Date.now()}` },
     body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
@@ -556,14 +569,13 @@ export async function runAssertions(): Promise<void> {
   const latePayload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(lateCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: lateCheckout.orderId,
+    vnp_TxnRef: lateCheckout.gatewayRef,
     vnp_OrderInfo: 'Thanh toan don hang muon',
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2ELATE${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '00',
@@ -589,7 +601,7 @@ export async function runAssertions(): Promise<void> {
   }>('/api/ledger/balances');
   const lateByCode = new Map(lateBalances.map((b) => [b.accountCode, b.balanceVnd]));
   assert(
-    (lateByCode.get('liability:refund_payable') ?? 0) >= lateCheckout.grossVnd,
+    (lateByCode.get(`liability:user:${buyer.id}:refund`) ?? 0) >= lateCheckout.grossVnd,
     'the late payment is booked as money owed to the buyer (refund payable)',
   );
 
@@ -737,7 +749,7 @@ export async function runAssertions(): Promise<void> {
     RETURNING id
   `;
 
-  const cancelledCheckout = await json<{ orderId: string; grossVnd: number }>(
+  const cancelledCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>(
     '/api/checkout',
     {
       method: 'POST',
@@ -764,19 +776,18 @@ export async function runAssertions(): Promise<void> {
     await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
       '/api/ledger/balances',
     )
-  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
 
   const cancelledPayload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(cancelledCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: cancelledCheckout.orderId,
+    vnp_TxnRef: cancelledCheckout.gatewayRef,
     vnp_OrderInfo: 'payment after the event was completed',
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2ECANCELLED${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '00',
@@ -793,7 +804,7 @@ export async function runAssertions(): Promise<void> {
     await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
       '/api/ledger/balances',
     )
-  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
   assert(
     refundAfterCancelled === refundBeforeCancelled + cancelledCheckout.grossVnd,
     'a payment for a cancelled order is booked as money owed to the buyer',
@@ -820,7 +831,7 @@ export async function runAssertions(): Promise<void> {
     VALUES (${doublePayEvent[0]!.id}, ${seller.id}, 'E2E double pay listing', 10, 1200000)
     RETURNING id
   `;
-  const doublePayCheckout = await json<{ orderId: string; grossVnd: number }>(
+  const doublePayCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>(
     '/api/checkout',
     {
       method: 'POST',
@@ -836,14 +847,13 @@ export async function runAssertions(): Promise<void> {
   const doublePayFirst: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_TmnCode: 'MOCKMRC',
     vnp_OrderType: 'other',
     vnp_Amount: String(doublePayCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
     vnp_CurrCode: 'VND',
-    vnp_TxnRef: doublePayCheckout.orderId,
+    vnp_TxnRef: doublePayCheckout.gatewayRef,
     vnp_OrderInfo: 'the first of two payments',
     vnp_ReturnUrl: 'http://localhost:3010/orders/x',
-    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
     vnp_TransactionNo: `E2EDOUBLEFIRST${Date.now()}`,
     vnp_BankCode: 'NCB',
     vnp_ResponseCode: '00',
@@ -864,7 +874,7 @@ export async function runAssertions(): Promise<void> {
     await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
       '/api/ledger/balances',
     )
-  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
 
   // The second payment, with a different transaction number.
   const doublePaySecond: Record<string, string> = {
@@ -887,7 +897,7 @@ export async function runAssertions(): Promise<void> {
     await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
       '/api/ledger/balances',
     )
-  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
 
   assert(
     cashAfterDouble === cashBeforeDouble + doublePayCheckout.grossVnd,
@@ -913,7 +923,7 @@ export async function runAssertions(): Promise<void> {
     }>;
   }>('/api/admin/payment-events');
 
-  const loggedForOrder = rawEvents.filter((e) => e.txn_ref === orderId);
+  const loggedForOrder = rawEvents.filter((e) => e.txn_ref === gatewayRef);
   assert(
     loggedForOrder.length >= 1,
     'the raw IPN was written to the reconciliation log',

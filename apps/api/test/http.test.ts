@@ -358,20 +358,23 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     expect(page.statusCode).toBe(200);
     const html = page.body;
 
-    // The form carries both URLs the script reads. The assertion has to
-    // match the *input element*, not just the string - the script itself
-    // contains `input[name="vnp_ReturnUrl"]`, so a plain `toContain`
-    // would pass even when the field is missing.
+    // The form carries the return URL, which the script reads to send the
+    // buyer back. The assertion has to match the *input element*, not just
+    // the string - the script itself contains
+    // `input[name="vnp_ReturnUrl"]`, so a plain `toContain` would pass
+    // even when the field is missing.
     const returnUrl = /<input type="hidden" name="vnp_ReturnUrl" value="([^"]*)"/.exec(html)?.[1];
-    const notifyUrl = /<input type="hidden" name="vnp_NotifyUrl" value="([^"]*)"/.exec(html)?.[1];
     expect(returnUrl).toBeTruthy();
-    expect(notifyUrl).toBeTruthy();
     expect(returnUrl).toContain(`/orders/${orderId}`);
-    expect(notifyUrl).toContain('/api/ipn/vnpay');
 
-    // The form tells the script where to send the IPN.
-    expect(html).toMatch(/data-notify="[^"]+"/);
-    expect(html).not.toContain('data-notify=""');
+    // The notify address is NOT a `vnp_` parameter: the real gateway takes
+    // the IPN URL from the merchant portal, not from the request. The mock
+    // receives it under its own name, so the parameter set of the redirect
+    // stays identical to the real gateway's.
+    expect(html).not.toContain('name="vnp_NotifyUrl"');
+    const notifyUrl = /data-notify="([^"]*)"/.exec(html)?.[1];
+    expect(notifyUrl).toBeTruthy();
+    expect(notifyUrl).toContain('/api/ipn/vnpay');
   });
 
   it('completes a payment through the mock gateway page', async () => {
@@ -399,7 +402,9 @@ describe.skipIf(!dbAvailable)('HTTP API', () => {
     for (const m of html.matchAll(/name="(vnp_[A-Za-z]+)" value="([^"]*)"/g)) {
       params[m[1]!] = m[2]!;
     }
-    expect(params.vnp_TxnRef).toBe(orderId);
+    // The reference the gateway knows the order by is alphanumeric, so it
+    // is the order id without its dashes - not the UUID itself.
+    expect(params.vnp_TxnRef).toBe(orderId.replace(/-/g, ''));
 
     // The browser signs the payload itself, so the test signs it too.
     const ipnPayload = {
