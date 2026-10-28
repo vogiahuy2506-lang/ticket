@@ -291,7 +291,34 @@ VNPAY_SECRET_KEY=...
 MOCK_GATEWAY=false
 ```
 
-Send the credentials to the reviewers separately, as requested.
+Send the credentials to the reviewers separately, as the brief asks: **by
+email or messenger, never by committing them.** The reason is not
+ceremony. `VNPAY_SECRET_KEY` is the key the IPN signature is verified
+against, so whoever holds it can forge a "payment succeeded" notification
+for any order. A secret in a public repository is not a secret any more.
+
+What to send them, exactly:
+
+| What | Where it comes from |
+| --- | --- |
+| `vnp_TmnCode` (merchant code) | the registration email from VNPay |
+| `vnp_HashSecret` (secret key) | the same email |
+| the IPN tunnel URL | your `cloudflared`/`ngrok` URL, if you want them to run it live |
+| the sandbox login | the credentials VNPay gives you for `sandbox.vnpayment.vn` |
+
+They put them in their own `.env`:
+
+```
+VNPAY_MERCHANT_CODE=...
+VNPAY_SECRET_KEY=...
+MOCK_GATEWAY=false
+```
+
+If you would rather not hand over a live credential - a perfectly
+reasonable choice, and one the brief leaves open - say so explicitly and
+send `MOCK_GATEWAY_SECRET=mock-secret-local-dev` instead, so they can run
+the whole flow against the simulator. What matters is that the reviewer
+knows which one they are looking at.
 
 ### The mock gateway
 

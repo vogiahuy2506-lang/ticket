@@ -284,6 +284,53 @@ dữ liệu demo**, nên bạn có thể chạy giữa lúc đang demo.
 - [ ] Mọi dòng tiền cân bằng, ledger append-only
 - [ ] Pending + available hiện rõ trên UI
 
+### Ghi chú: "Send your sandbox credentials to us separately, not in the repository"
+
+Đây là dòng trong đề bài nói: **bạn phải gửi cho giám khảo tài khoản VNPay
+sandbox qua một kênh riêng (email, zalo, messenger), KHÔNG commit vào GitHub.**
+
+Lý do: `VNPAY_SECRET_KEY` là khóa dùng để **ký (sign) và xác minh (verify)
+chữ ký của IPN**. Người có secret này có thể giả mạo thông báo "thanh toán
+thành công" cho đơn hàng bất kỳ. Nếu nó nằm trong repo public, bất kỳ ai
+clone repo cũng đọc được - và lúc đó tài khoản sandbox của bạn không còn là
+"sandbox" nữa, nó là một credential lộ thiên.
+
+**Cơ chế đã chuẩn bị sẵn (không cần code thêm):**
+
+| Nơi | Nội dung | Đã commit? |
+| --- | --- | --- |
+| `.env.example` | `VNPAY_MERCHANT_CODE=` / `VNPAY_SECRET_KEY=` - **rỗng** | ✅ Có (đúng) |
+| `.env` (local) | giá trị thật của bạn | ❌ Không - trong `.gitignore` |
+| README §"Credentials" | hướng dẫn điền + gửi riêng | ✅ Có |
+
+Đã kiểm tra: `git log --all -p -- .env` không có gì (`.env` **chưa từng** được
+commit), và trong toàn bộ history chỉ tồn tại placeholder `VNPAY_SECRET_KEY=...`
+trong README. **Không có secret thật nào lọt ra repo.**
+
+**Việc bạn cần làm - 3 bước:**
+
+1. **Đăng ký VNPay sandbox** tại <https://sandbox.vnpayment.vn/devreg/>.
+   VNPay gửi email cho bạn 2 giá trị: `vnp_TmnCode` (mã merchant) và
+   `vnp_HashSecret` (secret key).
+2. **Điền vào `.env` local** (file này KHÔNG lên GitHub):
+   ```
+   VNPAY_MERCHANT_CODE=<vnp_TmnCode của bạn>
+   VNPAY_SECRET_KEY=<vnp_HashSecret của bạn>
+   MOCK_GATEWAY=false
+   ```
+   Rồi `docker compose up -d --build api` để nạp lại env.
+3. **Gửi riêng cho giám khảo** - email hoặc nhắn zalo/messenger, kèm:
+   - `vnp_TmnCode`
+   - `vnp_HashSecret`
+   - link hướng dẫn đăng nhập sandbox
+   - link tunnel IPN của bạn (nếu họ muốn chạy thật)
+
+**Nếu bạn chưa đăng ký được / không muốn gửi:** nói rõ với giám khảo rằng
+bạn dùng mock gateway (wire format giống hệt VNPay) và gửi kèm
+`MOCK_GATEWAY_SECRET=mock-secret-local-dev` để họ tự chạy. Đề cho phép
+"where this task is unclear, make a judgement call" - nhưng nói thẳng là mock
+còn hơn im lặng.
+
 ### Ghi chú: "shared with https://github.com/syn-mcj"
 
 Repo hiện tại: `github.com/vogiahuy2506-lang/ticket` (public).
