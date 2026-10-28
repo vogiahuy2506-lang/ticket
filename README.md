@@ -13,6 +13,11 @@ double-entry ledger.
 > **Looking for the demo?** [`TESTING.md`](./TESTING.md) is a step-by-step
 > walkthrough: what to click, what to expect, and the SQL that proves each
 > claim - mapped one-to-one onto the brief.
+>
+> **Reviewing the code?** [`REVIEW-QUESTIONS.md`](./REVIEW-QUESTIONS.md) is the
+> list of questions a hard reviewer would ask - and the answers, with the
+> exact file and line for each claim. It names the weak points honestly
+> instead of only listing what works.
 
 ---
 
