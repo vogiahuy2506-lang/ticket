@@ -187,7 +187,7 @@ export default async function HomePage({
         <p className="mt-3 text-sm text-brand-900/80">
           Xem chi tiết tại trang{' '}
           <Link href="/ledger" className="font-semibold underline underline-offset-4">
-            Sổ cái
+            Lịch sử giao dịch
           </Link>
           .
         </p>

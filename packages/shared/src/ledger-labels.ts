@@ -23,6 +23,6 @@ export const LEDGER_REF_LABELS_VI: Record<LedgerRefType, string> = {
  */
 export function ledgerEntryTitle(refType: string, refId?: string | null): string {
   const label =
-    LEDGER_REF_LABELS_VI[refType as LedgerRefType] ?? `Bút to ${refType}`;
+    LEDGER_REF_LABELS_VI[refType as LedgerRefType] ?? `Giao dịch ${refType}`;
   return refId ? `${label} ${refId}` : label;
 }

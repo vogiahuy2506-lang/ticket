@@ -19,7 +19,7 @@ export default async function WalletPage() {
     <div className="space-y-6">
       <PageHeader
         title={`Ví của ${user.name}`}
-        subtitle="Số dư được tính trực tiếp từ sổ kế toán entry - không có cột số dư riêng."
+        subtitle="Số dư được tính trực tiếp từ lịch sử giao dịch - không có cột số dư riêng."
         action={<Badge tone="brand">{user.role}</Badge>}
       />
 

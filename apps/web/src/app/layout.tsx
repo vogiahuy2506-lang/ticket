@@ -7,7 +7,7 @@ import Link from 'next/link';
 export const metadata: Metadata = {
   title: 'VeX - Chợ vé sự kiện',
   description:
-    'Marketplace vé sự kiện: thanh toán qua VNPay, escrow và sổ kế toán entry.',
+    'Marketplace vé sự kiện: thanh toán qua VNPay, escrow và lịch sử giao dịch.',
 };
 
 export const viewport: Viewport = {
@@ -19,7 +19,7 @@ export const viewport: Viewport = {
 const NAV = [
   { href: '/', label: 'Sự kiện' },
   { href: '/wallet', label: 'Ví của tôi' },
-  { href: '/ledger', label: 'Sổ cái' },
+  { href: '/ledger', label: 'Lịch sử giao dịch' },
 ];
 
 /** Only shown to an operator. */
@@ -111,7 +111,7 @@ export default async function RootLayout({
           <div className="mx-auto w-full max-w-5xl px-4 py-6 text-xs leading-relaxed text-ink-400">
             <p>
               VeX - bạn cắt nhịp giao dịch vé sự kiện. Mọi dòng tiền đều được ghi
-              vào sổ kế toán entry; không có số dư nào được lưu riêng.
+              vào lịch sử giao dịch; không có số dư nào được lưu riêng.
             </p>
           </div>
         </footer>

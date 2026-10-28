@@ -350,8 +350,8 @@ With `MOCK_GATEWAY=true` (the default) the whole flow runs locally:
    role sees that button, and the server action checks the role too.
 7. The seller's wallet now shows the money under *Khả dụng*, and the order
    is **Đã giải ngân**.
-8. Open **Sổ cái** to see every journal entry and the derived balances, with
-   a line that says the ledger is *cân bằng* (balanced).
+8. Open **Lịch sử giao dịch** to see every journal entry and the derived
+   balances, with a line that says the ledger is *cân bằng* (balanced).
 
 ### Using the storefront
 
@@ -365,7 +365,7 @@ on the page is rendered for that user.
 | **Sự kiện → một sự kiện** (`/events/<id>`) | The listings of one event. Each listing is a checkout form: pick a quantity, see the fee breakdown update live, press **Thanh toán**. |
 | **Kết quả thanh toán** (`/orders/<id>`) | The order status, the money split and every IPN the gateway sent for this order. The page polls the API every 3 seconds while the order is still waiting for the gateway. |
 | **Ví của tôi** (`/wallet`) | The acting user's wallet: money waiting for release (escrow), money available to withdraw, and the transaction history. |
-| **Sổ cái** (`/ledger`) | The platform-wide double-entry journal: the balance of every account and every posted entry. |
+| **Lịch sử giao dịch** (`/ledger`) | The platform-wide double-entry journal: the balance of every account and every posted entry. |
 | **Quản trị** (`/admin`) | The operations dashboard. Only shown to the `admin` role. |
 
 **Reading the money model.** The buyer pays the listing price plus a 10%

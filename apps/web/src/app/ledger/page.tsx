@@ -65,8 +65,8 @@ export default async function LedgerPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Sổ kế toán entry"
-        subtitle="Mọi dòng tiền đều được ghi vào một bút to có hai dòng (Nợ - Có). Không có số dư nào được lưu riêng."
+        title="Lịch sử giao dịch"
+        subtitle="Mọi dòng tiền đều được ghi thành một giao dịch có hai dòng (Nợ - Có). Không có số dư nào được lưu riêng."
       />
 
       <div className="grid grid-cols-2 gap-3">
@@ -104,8 +104,8 @@ export default async function LedgerPage() {
           {balanced ? '=' : '!'}
         </span>
         {balanced
-          ? 'Sổ kế toán entry cân bằng - Tổng Nợ bằng Tổng Có.'
-          : 'SỔ KẾ TOÁN ENTRY KHÔNG CÂN BẰNG.'}
+          ? 'Giao dịch cân bằng - Tổng Nợ bằng Tổng Có.'
+          : 'GIAO DỊCH KHÔNG CÂN BẰNG.'}
       </div>
 
       <section className="space-y-3">
@@ -199,12 +199,12 @@ export default async function LedgerPage() {
 
       <section className="space-y-3">
         <SectionTitle
-          title="Các bút to kế toán"
-          hint={`${transactions.length} bút to`}
+          title="Các giao dịch"
+          hint={`${transactions.length} giao dịch`}
         />
 
         {transactions.length === 0 ? (
-          <p className="card text-sm text-ink-500">Chưa có bút to nào.</p>
+          <p className="card text-sm text-ink-500">Chưa có giao dịch nào.</p>
         ) : null}
 
         <div className="space-y-3">

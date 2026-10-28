@@ -69,7 +69,7 @@ export default async function AdminPage() {
           <span>
             Đang xem với quyền <span className="font-semibold">{operator.name}</span>
             {' · '}
-            số dư được tính trực tiếp từ sổ kế toán entry.
+            số dư được tính trực tiếp từ lịch sử giao dịch.
           </span>
         }
         action={<Badge tone="brand">admin</Badge>}

@@ -24,7 +24,7 @@ describe('ledger entry labels', () => {
 
   it('falls back to the raw type for an unknown entry', () => {
     expect(ledgerEntryTitle('MANUAL_ADJUSTMENT', null)).toBe(
-      'Bút to MANUAL_ADJUSTMENT',
+      'Giao dịch MANUAL_ADJUSTMENT',
     );
   });
 });
