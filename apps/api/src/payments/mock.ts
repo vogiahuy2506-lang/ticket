@@ -1,10 +1,12 @@
 import { toVnSafeText } from '@tce/shared';
-import { signVnParams } from './vnpay-crypto.js';
-import { formatVnTime } from './vnpay.js';
+import { signVnParams, signVnPipe } from './vnpay-crypto.js';
+import { formatVnTime, QUERYDR_RESPONSE_HASH_FIELDS } from './vnpay.js';
+import { findMockTransaction } from './mock-registry.js';
 import type {
   CreatePaymentInput,
   CreatePaymentResult,
   PaymentProvider,
+  QueryTransactionInput,
   VerifyResult,
 } from './provider.js';
 
@@ -44,6 +46,32 @@ export const MOCK_AMOUNT_FACTOR = 100;
  */
 export function sign(params: Record<string, string>): string {
   return signVnParams(params, MOCK_SECRET);
+}
+
+/**
+ * The checksum of a `querydr` answer.
+ *
+ * The server-to-server API signs the *fixed* list of values joined by `|`,
+ * not the sorted `key=value` list the `pay` request uses, so the mock has
+ * to sign its answers the same way - otherwise the app would reject every
+ * answer and the lost-IPN fallback could never work.
+ */
+export function signQueryResponse(payload: Record<string, string>): string {
+  return signVnPipe(
+    QUERYDR_RESPONSE_HASH_FIELDS.map((k) => payload[k] ?? ''),
+    MOCK_SECRET,
+  );
+}
+
+/**
+ * The signed answer of the mock gateway, with the checksum attached.
+ *
+ * The checksum is signed the way the server-to-server API signs, so the
+ * app verifies the answer with the same routine it uses for the real
+ * gateway.
+ */
+export function signedQueryResponse(payload: Record<string, string>): Record<string, string> {
+  return { ...payload, vnp_SecureHash: signQueryResponse(payload) };
 }
 
 export class MockProvider implements PaymentProvider {
@@ -116,6 +144,92 @@ export class MockProvider implements PaymentProvider {
       orderId: payload.vnp_TxnRef,
       bankCode: payload.vnp_BankCode,
       raw: payload,
+    };
+  }
+
+  /**
+   * The mock gateway's answer to `querydr`.
+   *
+   * A real gateway remembers every payment it accepted and can be asked
+   * about it later. The mock does the same - the payment page registers
+   * the transaction with the gateway before it notifies the app, so if
+   * that notification is lost the gateway still knows about the payment.
+   *
+   * Without this the lost-IPN fallback could not be exercised at all in
+   * the default setup: the mock only existed inside the browser tab, so
+   * there was nothing to ask, and the "check the status again" button was
+   * a dead end.
+   *
+   * The answer follows the real contract: a payment the gateway does not
+   * know is reported with code `91` ("not found"), and a known payment
+   * carries its amount and transaction number. The checksum is signed the
+   * `|`-joined way the server-to-server API uses, so the app verifies it
+   * with the same routine it uses for the real gateway.
+   */
+  async queryTransaction(input: QueryTransactionInput): Promise<VerifyResult | null> {
+    const txn = findMockTransaction(input.gatewayRef);
+
+    if (!txn) {
+      // "Không tìm thấy giao dịch yêu cầu" - the same code the real
+      // gateway uses. It is *not* a failure: the payment may simply not
+      // have reached the gateway yet.
+      const payload: Record<string, string> = {
+        vnp_ResponseId: `mock-${input.gatewayRef.slice(0, 8)}`,
+        vnp_Command: 'querydr',
+        vnp_ResponseCode: '91',
+        vnp_Message: 'Khong tim thay giao dich yeu cau',
+        vnp_TmnCode: 'MOCKMRC',
+        vnp_TxnRef: input.gatewayRef,
+        vnp_Amount: '0',
+        vnp_BankCode: '',
+        vnp_PayDate: '',
+        vnp_TransactionNo: '',
+        vnp_TransactionType: '',
+        vnp_TransactionStatus: '',
+        vnp_OrderInfo: '',
+        vnp_PromotionCode: '',
+        vnp_PromotionAmount: '',
+      };
+      return {
+        signatureValid: true,
+        ok: false,
+        code: '91',
+        message: payload.vnp_Message ?? '',
+        transactionRef: input.gatewayRef,
+        raw: signedQueryResponse(payload),
+      };
+    }
+
+    const paid = txn.status === '00';
+    const payload: Record<string, string> = {
+      vnp_ResponseId: `mock-${input.gatewayRef.slice(0, 8)}`,
+      vnp_Command: 'querydr',
+      vnp_ResponseCode: '00',
+      vnp_Message: 'QueryDR Success',
+      vnp_TmnCode: 'MOCKMRC',
+      vnp_TxnRef: txn.gatewayRef,
+      vnp_Amount: String(txn.amountVnd * MOCK_AMOUNT_FACTOR),
+      vnp_BankCode: 'NCB',
+      vnp_PayDate: formatVnTime(txn.createdAt),
+      vnp_TransactionNo: txn.transactionNo,
+      vnp_TransactionType: '01',
+      vnp_TransactionStatus: txn.status,
+      vnp_OrderInfo: '',
+      vnp_PromotionCode: '',
+      vnp_PromotionAmount: '',
+    };
+
+    return {
+      signatureValid: true,
+      ok: paid,
+      code: paid ? '00' : txn.status,
+      message: payload.vnp_Message ?? '',
+      transactionId: txn.transactionNo,
+      transactionRef: txn.gatewayRef,
+      amountVnd: txn.amountVnd,
+      orderId: txn.gatewayRef,
+      bankCode: 'NCB',
+      raw: signedQueryResponse(payload),
     };
   }
 }

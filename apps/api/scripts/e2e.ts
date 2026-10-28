@@ -19,6 +19,7 @@
  */
 
 import crypto from 'node:crypto';
+import { computeFees } from '@tce/shared';
 import { getSql } from '../src/db/client.js';
 import { signVnParams } from '../src/payments/vnpay-crypto.js';
 
@@ -449,6 +450,68 @@ export async function runAssertions(): Promise<void> {
   const retryAudit = await json<{ ok: boolean }>('/api/ledger/audit');
   assert(retryAudit.ok, 'the ledger is still balanced after the successful retry');
 
+  // ------------------------------------- a lost notification (the fallback)
+  // The buyer paid, but the notification never arrived - the tunnel was
+  // down, the IPN URL was not registered, the gateway could not reach us.
+  // The order stays PENDING_PAYMENT and the money is sitting at the
+  // gateway with nobody looking for it.
+  //
+  // The gateway *remembers* the payment, so the app can ask it and
+  // recover it. This is the whole point of the `querydr` fallback, and it
+  // can only be proven if the mock gateway keeps a registry - which it
+  // now does.
+  const lostCheckout = await json<{ orderId: string; gatewayRef: string; grossVnd: number }>(
+    '/api/checkout',
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': `e2e-lost-${Date.now()}` },
+      body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+    },
+  );
+
+  // The gateway accepts the payment - but the notification is dropped.
+  await fetch(`${API}/mock-pay/register?${new URLSearchParams({
+    vnp_TxnRef: lostCheckout.gatewayRef,
+    vnp_Amount: String(lostCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_TransactionNo: `E2ELOST${Date.now()}`,
+    vnp_TransactionStatus: '00',
+    vnp_ResponseCode: '00',
+  }).toString()}`, { method: 'POST' });
+
+  const lostBefore = await json<{ order: { status: string } }>(
+    `/api/orders/${lostCheckout.orderId}`,
+  );
+  assert(
+    lostBefore.order.status === 'PENDING_PAYMENT',
+    'the order waits for its notification (the notification was lost)',
+  );
+
+  // The buyer presses "check the status again": the app asks the gateway
+  // and recovers the payment.
+  const recheck = await json<{ status: string }>(
+    `/api/orders/${lostCheckout.orderId}/recheck?gateway=1`,
+    { method: 'POST' },
+  );
+  assert(
+    recheck.status === 'PAID',
+    'the gateway query recovers the payment whose notification was lost',
+  );
+
+  const lostAudit = await json<{ ok: boolean }>('/api/ledger/audit');
+  assert(lostAudit.ok, 'the ledger is still balanced after the recovered payment');
+
+  // The recovered money is in escrow, not owed back to the buyer - the
+  // buyer did get their ticket.
+  const lostRefund = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === `liability:user:${buyer.id}:refund`)?.balanceVnd ?? 0;
+  assert(
+    lostRefund === refundAfter,
+    'the recovered payment is escrowed, not refunded (the buyer has the ticket)',
+  );
+
   // ------------------------- a late payment that arrives before the sweep
   // The same late-payment case, but the lazy sweep has NOT run yet: the
   // reservation window has passed while the order is still PENDING_PAYMENT.
@@ -566,6 +629,15 @@ export async function runAssertions(): Promise<void> {
     'the lazy sweep expires the abandoned reservation',
   );
 
+  // The sweep gave the ticket back, so this is the count the payment must
+  // not change: the buyer paid for a ticket that is no longer theirs, and
+  // the money is booked as owed to them instead.
+  const soldBeforeSweep = (
+    await sql`
+      SELECT quantity_sold FROM listings WHERE id = ${listing.id}
+    `
+  )[0]!.quantity_sold as unknown as number;
+
   const latePayload: Record<string, string> = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
@@ -613,17 +685,36 @@ export async function runAssertions(): Promise<void> {
   // available again. Before the fix the ticket stayed reserved forever: the
   // sweep only touches PENDING_PAYMENT orders, so a REFUND_REQUIRED order
   // never gave its ticket back.
+  //
+  // The baseline is the count *after* the sweep (the sweep already gave the
+  // ticket back) and *before* the notification - so the payment itself
+  // must not take it away a second time, and must not leave it reserved.
   const soldAfterLate = (
-    await json<{ listings: Array<{ id: string; quantity_sold: number }> }>(
-      `/api/events/${event.id}`,
-    )
-  ).listings.find((l) => l.id === listing.id)?.quantity_sold;
+    await sql`
+      SELECT quantity_sold FROM listings WHERE id = ${listing.id}
+    `
+  )[0]!.quantity_sold as unknown as number;
   assert(
-    soldAfterLate === soldBeforeDecline,
+    soldAfterLate === soldBeforeSweep,
     'a late payment returns the reserved ticket to the listing',
   );
 
   // ------------------------------------------------- escrow release
+  // The baseline is read *here*, right before the release: by now the
+  // escrow holds two orders - the original one (2 tickets) and the one
+  // whose notification was lost, which was recovered through the gateway
+  // query (1 ticket).
+  const pendingAtRelease = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === `liability:user:${seller.id}:pending`)?.balanceVnd ?? 0;
+  const availableAtRelease = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === `liability:user:${seller.id}:available`)?.balanceVnd ?? 0;
+
   const released = await json<{ released: number; releasedVnd: number }>(
     `/api/events/${event.id}/complete`,
     { method: 'POST' },
@@ -637,13 +728,19 @@ export async function runAssertions(): Promise<void> {
   const pendingAfter = afterByCode.get(`liability:user:${seller.id}:pending`) ?? 0;
   const availableAfter = afterByCode.get(`liability:user:${seller.id}:available`) ?? 0;
 
+  // Two orders are in escrow by now: the original one (2 tickets), and the
+  // one whose notification was lost and that was recovered through the
+  // gateway query (1 ticket). Both are released, so the balances move by
+  // the sum of the two sellers' shares - not twice the first one.
+  const recoveredFees = computeFees(price, 1);
+  const releasedTotal = expectedSellerNet + recoveredFees.sellerNetVnd;
   assert(
-    pendingAfter === pending - expectedSellerNet,
+    pendingAfter === pendingAtRelease - releasedTotal,
     'pending balance dropped after the event completed',
   );
   assert(
-    availableAfter === available + expectedSellerNet,
-    `available balance grew by ${expectedSellerNet} after the release`,
+    availableAfter === availableAtRelease + releasedTotal,
+    `available balance grew by ${releasedTotal} after the release`,
   );
 
   const orderAfter = await json<{ order: { status: string } }>(`/api/orders/${orderId}`);

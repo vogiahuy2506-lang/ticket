@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppDeps } from './helpers.js';
+import { recordMockTransaction } from '../payments/mock-registry.js';
+import { MOCK_AMOUNT_FACTOR } from '../payments/mock.js';
 
 function escapeHtml(v: string | undefined): string {
   return (v ?? '')
@@ -177,6 +179,56 @@ function qrSvg(seed: string, size = 29): string {
 export async function registerMockGatewayRoutes(app: FastifyInstance): Promise<void> {
   const deps = app as unknown as AppDeps;
 
+  /**
+   * The mock gateway accepts a payment.
+   *
+   * A real gateway *remembers* every transaction it has accepted, and it
+   * can be asked about one later (`querydr`). The payment page calls this
+   * endpoint first and only then notifies the app, exactly in that order.
+   *
+   * The order matters: if the notification is lost (the tunnel is down,
+   * the IPN URL is not registered, the gateway cannot reach us), the
+   * gateway still knows about the payment - so the app can recover it by
+   * asking. Without this step the mock gateway would only exist inside
+   * the browser tab, there would be nothing to ask, and the lost-IPN
+   * fallback could not be exercised at all in the default setup.
+   */
+  app.post<{ Body: Record<string, string>; Querystring: Record<string, string> }>(
+    '/mock-pay/register',
+    async (req, reply) => {
+      if (!deps.config.mockGateway) {
+        return reply.code(404).send({ error: 'MOCK_DISABLED' });
+      }
+
+      // The values may arrive in the body (a JSON call from a test) or in
+      // the query string (the payment page in the browser). Both are
+      // accepted, so the caller does not have to care which one it used.
+      const body = req.body ?? {};
+      const query = req.query ?? {};
+      const field = (name: string) => body[name] ?? query[name] ?? '';
+
+      const gatewayRef = String(field('vnp_TxnRef')).trim();
+      if (!gatewayRef) {
+        return reply.code(400).send({ error: 'TXN_REF_REQUIRED' });
+      }
+
+      const wireAmount = Number(field('vnp_Amount'));
+      if (!Number.isFinite(wireAmount) || wireAmount <= 0) {
+        return reply.code(400).send({ error: 'AMOUNT_REQUIRED' });
+      }
+
+      recordMockTransaction({
+        gatewayRef,
+        amountVnd: Math.round(wireAmount / MOCK_AMOUNT_FACTOR),
+        transactionNo: String(field('vnp_TransactionNo') || `MOCK${Date.now()}`),
+        status: String(field('vnp_TransactionStatus') || field('vnp_ResponseCode') || '00'),
+        createdAt: new Date(),
+      });
+
+      return { registered: true };
+    },
+  );
+
   app.get<{ Querystring: Record<string, string> }>('/mock-pay', async (req, reply) => {
     if (!deps.config.mockGateway) {
       return reply.code(404).send({ error: 'MOCK_DISABLED' });
@@ -248,6 +300,18 @@ const notify = async (form) => {
   params.append('vnp_SecureHash', await sign(params));
   const notifyUrl = form.getAttribute('data-notify');
   const returnUrl = form.querySelector('input[name="vnp_ReturnUrl"]').value;
+  // The gateway *accepts* the payment before it notifies the app - and it
+  // remembers it. Registering it here means the gateway still knows about
+  // the payment even if the notification below never arrives, so the app
+  // can ask it later. This is the step that makes the lost-IPN fallback
+  // testable in the local demo.
+  const reg = new URLSearchParams();
+  reg.append('vnp_TxnRef', params.get('vnp_TxnRef') || '');
+  reg.append('vnp_Amount', params.get('vnp_Amount') || '');
+  reg.append('vnp_TransactionNo', params.get('vnp_TransactionNo') || '');
+  reg.append('vnp_TransactionStatus', params.get('vnp_TransactionStatus') || '');
+  reg.append('vnp_ResponseCode', params.get('vnp_ResponseCode') || '');
+  await fetch('/mock-pay/register?' + reg.toString(), { method: 'POST' }).catch(() => {});
   // The real gateway notifies with a GET request, so the mock does too.
   const res = await fetch(notifyUrl + '?' + params.toString(), { method: 'GET' });
   const body = await res.json().catch(() => ({}));

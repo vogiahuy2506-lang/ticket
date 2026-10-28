@@ -62,7 +62,6 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     expect(res.status).toBe(200);
     return (await res.json()) as { orderId: string; grossVnd: number; gatewayRef: string };
   }
-
   it('shows the user their own transactions even when the platform is busy', async () => {
     // The user is one of many. The platform has plenty of other
     // transactions, so a wallet that filtered a *global* window would drop
@@ -454,5 +453,81 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     expect(found!.grossVnd).toBe(order.grossVnd);
     // The total on the dashboard matches the order that is listed.
     expect(body.refundPayableVnd).toBeGreaterThanOrEqual(found!.grossVnd);
+  });
+
+  it('recovers a payment whose notification never arrived', async () => {
+    // The scenario, end to end.
+    //
+    // The buyer paid, but the notification was lost (the tunnel was down,
+    // the IPN URL was not registered, the gateway could not reach us). The
+    // order is still PENDING_PAYMENT and the money is sitting at the
+    // gateway with nobody looking for it.
+    //
+    // The mock gateway now *remembers* every payment it accepted, so the
+    // app can ask it (`querydr`) and recover the payment. Without the
+    // registry the mock only existed inside the browser tab, there was
+    // nothing to ask, and this branch of the app could never be exercised
+    // in the default setup.
+    const fx = await data.fixture('lost-ipn');
+    const order = await checkout(fx.buyer.id, fx.listing.id);
+
+    // The gateway accepted the payment...
+    const registered = await fetch(`${base}/mock-pay/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        vnp_TxnRef: order.gatewayRef,
+        vnp_Amount: String(order.grossVnd * 100),
+        vnp_TransactionNo: 'LOST-IPN-1',
+        vnp_TransactionStatus: '00',
+        vnp_ResponseCode: '00',
+      }),
+    });
+    expect(registered.status).toBe(200);
+
+    // ... but the notification never arrives. The order is still waiting.
+    expect(await data.orderStatus(order.orderId)).toBe('PENDING_PAYMENT');
+
+    // The buyer presses "check the status again": the app asks the
+    // gateway, and the money is booked.
+    const recheck = await fetch(`${base}/api/orders/${order.orderId}/recheck?gateway=1`, {
+      method: 'POST',
+    });
+    expect(recheck.status).toBe(200);
+    const body = (await recheck.json()) as { status: string };
+    expect(body.status).toBe('PAID');
+
+    // The money is in escrow - the seller's pending balance grew, and
+    // the buyer is not refunded (they got their ticket).
+    const balances = await db.sql<{ code: string; balance: string }[]>`
+      SELECT a.code, COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount_vnd
+                                       WHEN e.direction = 'debit'  THEN -e.amount_vnd END), 0)::text AS balance
+      FROM ledger_entries e
+      JOIN ledger_accounts a ON a.id = e.account_id
+      WHERE a.code IN (${`liability:user:${fx.seller.id}:pending`},
+                       ${`liability:user:${fx.buyer.id}:refund`})
+      GROUP BY a.code
+    `;
+    const pending = balances.find((b) => b.code.endsWith(':pending'));
+    const refund = balances.find((b) => b.code.endsWith(':refund'));
+    expect(Number(pending?.balance ?? 0)).toBeGreaterThan(0);
+    expect(Number(refund?.balance ?? 0)).toBe(0);
+  });
+
+  it('never lets the gateway query cancel an order that was never paid', async () => {
+    // The gateway has never seen this payment - it answers "not found"
+    // (code 91). The order must stay PENDING_PAYMENT, because the buyer
+    // may be right now on the payment page.
+    const fx = await data.fixture('query-not-found');
+    const order = await checkout(fx.buyer.id, fx.listing.id);
+
+    const recheck = await fetch(`${base}/api/orders/${order.orderId}/recheck?gateway=1`, {
+      method: 'POST',
+    });
+    expect(recheck.status).toBe(200);
+    const body = (await recheck.json()) as { status: string };
+    expect(body.status).toBe('PENDING_PAYMENT');
+    // The ticket is still reserved for the buyer.
+    expect(await data.quantitySold(fx.listing.id)).toBe(1);
   });
 });

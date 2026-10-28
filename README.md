@@ -773,6 +773,27 @@ buyer has just come back from the gateway - and whenever the buyer presses
 every 3 seconds for as long as the page stays open, and forever for an
 `EXPIRED` order that was never paid.
 
+**The mock gateway remembers its payments.** A real gateway keeps every
+transaction it has accepted and can be asked about one later - that
+memory *is* the second source of truth the fallback relies on. The mock
+used to have none: the payment page signed the payload and called the IPN
+endpoint straight from the browser, so the mock gateway only existed inside
+the tab. There was nothing to ask, the "check the status again" button was
+a dead end in the default setup, and the lost-IPN branch of the app could
+not be exercised at all.
+
+The mock now keeps a registry (`payments/mock-registry.ts`). The payment
+page *registers* the transaction with the gateway first - which is what a
+real gateway does when the buyer confirms - and only then notifies the
+app. If the notification is lost, the gateway still knows about the
+payment and the app can recover it by asking. The registry is in memory on
+purpose: it is a development aid and never holds real money.
+
+Two tests prove the whole path: `test/gaps.test.ts` drives the API
+(checkout → the gateway registers the payment → the notification is
+dropped → the re-check recovers it → the money is in escrow), and the
+end-to-end script does the same over HTTP.
+
 ### The wallet only shows the user's own transactions
 
 The wallet used to take the last 50 transactions of the *whole platform*
@@ -1314,7 +1335,7 @@ There are three layers, and each one covers what the others cannot.
 
 ### Integration tests (a real database)
 
-`npm run test:api` runs the whole API suite (123 tests). The 82 in the
+`npm run test:api` runs the whole API suite (125 tests). The 82 in the
 files below run against a real Postgres, in a
 **private schema per test file** that is dropped afterwards. The
 developer's own database is never touched, and the tests can be run as
@@ -1329,7 +1350,7 @@ and still be safe.
 |---|---|
 | `test/orders.test.ts` | the checkout rules: an invalid quantity, an unknown listing, a seller buying their own ticket, a completed event, not enough tickets left, the `Idempotency-Key` (same order, and scoped per buyer), two buyers racing for the last ticket, eight buyers racing for three tickets, and the expiry sweep |
 | `test/race.test.ts` | the race between a checkout and the completion of the event: the checkout must hold a **shared** lock (`FOR SHARE`) on the event row, the escrow release an **exclusive** one (`FOR UPDATE`), so the two can never interleave. The test proves the lock directly (with a `lock_timeout`), not by hoping for a lucky interleaving, asserts the invariant that no order of a completed event is left `PENDING_PAYMENT`, and runs the two against each other eight times to prove the **lock order** is the same on both sides (a different order would deadlock) |
-| `test/gaps.test.ts` | the parts the demo does not click on: the wallet must show the user's own transactions even when 60 other transactions follow theirs (the filter runs in the database, not in JavaScript), the gateway must be asked about an `EXPIRED` order and never about a settled one, a `querydr` answer may never cancel an order that is still being paid, the shared status labels must know every status the database accepts, the order list must show a user their own orders (and nobody else's), a pending order can be cancelled and the tickets go back on sale, the dashboard must name the orders the operator has to refund, and an unknown event is a 404 rather than a 500 |
+| `test/gaps.test.ts` | the parts the demo does not click on: the wallet must show the user's own transactions even when 60 other transactions follow theirs (the filter runs in the database, not in JavaScript), the gateway must be asked about an `EXPIRED` order and never about a settled one, a `querydr` answer may never cancel an order that is still being paid, the shared status labels must know every status the database accepts, the order list must show a user their own orders (and nobody else's), a pending order can be cancelled and the tickets go back on sale, the dashboard must name the orders the operator has to refund, and an unknown event is a 404 rather than a 500. It also proves the lost-notification recovery end to end: the gateway accepts the payment, the notification is dropped, the re-check asks the gateway and the money lands in escrow - and that a gateway that has never seen the payment must not cancel the order |
 | `test/ipn.test.ts` | the gateway notification: a normal capture, the same notification twice, a declined payment, a wrong amount, a late payment, and a second payment for an order that was already paid, released or refunded |
 | `test/http.test.ts` | the HTTP surface: every rejection code (`400`, `404`, `409`), the IPN response codes (`01`, `02`, `04`, `97`, `99`), the escrow release, the cancellation of unpaid orders, the reconciliation log, and the append-only guarantee |
 | `test/invariants.test.ts` | the money invariants over a wide grid of prices and quantities, and a long run of buy-pay-release cycles that must end perfectly solvent |
