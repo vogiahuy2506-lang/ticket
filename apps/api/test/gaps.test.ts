@@ -206,14 +206,14 @@ describe.skipIf(!dbAvailable)('the parts the demo does not click on', () => {
     //
     // The re-check asks the gateway "did this transaction succeed?". A
     // brand new payment is reported by the gateway as *not found* (code
-    // 04) - the gateway has not seen it yet. That is not a failure: the
+    // 91) - the gateway has not seen it yet. That is not a failure: the
     // buyer is right now on the payment page. If the query were applied
     // like a notification, the order would be marked FAILED and the
     // tickets given back *while the buyer is paying*. The money would
     // arrive afterwards for an order that is no longer pending, and it
     // would be booked as a late payment instead of a purchase.
     const notFoundYet = decideQueryOutcome(
-      { signatureValid: true, ok: false, code: '04', amountVnd: 100_000 },
+      { signatureValid: true, ok: false, code: '91', amountVnd: 100_000 },
       100_000,
     );
     expect(notFoundYet.action).toBe('skip');

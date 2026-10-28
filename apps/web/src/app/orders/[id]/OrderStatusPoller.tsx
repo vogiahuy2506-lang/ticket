@@ -70,12 +70,28 @@ export default function OrderStatusPoller({ orderId, initialStatus }: Props) {
   const [status, setStatus] = useState(initialStatus);
   const [checking, setChecking] = useState(false);
 
+  // The buyer has just come back from the gateway: ask it once (querydr),
+  // so a lost IPN is recovered without waiting for the button. An EXPIRED
+  // order is asked too - the sweep released the ticket, not the money.
   useEffect(() => {
-    // An EXPIRED order is polled too: the lazy sweep released the ticket,
-    // but the buyer may well have paid - and if the IPN was lost, the money
-    // would sit at the gateway with nobody looking for it. The re-check
-    // asks the gateway directly, so a lost notification can still be
-    // recovered.
+    if (initialStatus !== 'PENDING_PAYMENT' && initialStatus !== 'EXPIRED') return;
+    void fetch(`/api/orders/${orderId}/recheck?gateway=1`, { method: 'POST' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { status: string } | null) => {
+        if (data && data.status !== initialStatus) {
+          setStatus(data.status);
+          router.refresh();
+        }
+      })
+      .catch(() => {
+        /* the polls below still pick up the IPN */
+      });
+  }, [orderId, initialStatus, router]);
+
+  useEffect(() => {
+    // The polls only read the database. Asking the gateway on every tick
+    // would call querydr every 3 seconds for as long as the page is open -
+    // forever for an EXPIRED order that was never paid.
     if (status !== 'PENDING_PAYMENT' && status !== 'EXPIRED') return;
 
     let cancelled = false;
@@ -105,7 +121,9 @@ export default function OrderStatusPoller({ orderId, initialStatus }: Props) {
   const recheck = async () => {
     setChecking(true);
     try {
-      const res = await fetch(`/api/orders/${orderId}/recheck`, { method: 'POST' });
+      const res = await fetch(`/api/orders/${orderId}/recheck?gateway=1`, {
+        method: 'POST',
+      });
       const data = (await res.json()) as { status: string };
       setStatus(data.status);
       router.refresh();

@@ -57,8 +57,8 @@ export class MockProvider implements PaymentProvider {
   constructor(private readonly mockPayBaseUrl: string) {}
 
   async createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
-    const now = new Date();
-    const expire = new Date(now.getTime() + 15 * 60 * 1000);
+    const created = input.createdAt ?? new Date();
+    const expire = new Date(created.getTime() + 15 * 60 * 1000);
 
     const params: Record<string, string> = {
       vnp_Version: '2.1.0',
@@ -75,7 +75,7 @@ export class MockProvider implements PaymentProvider {
       // The dates are part of the real request, so the mock sends them
       // too: a mock with a smaller parameter set would let a missing
       // parameter slip through unnoticed.
-      vnp_CreateDate: formatVnTime(now),
+      vnp_CreateDate: formatVnTime(created),
       vnp_ExpireDate: formatVnTime(expire),
     };
     const query = new URLSearchParams({ ...params, vnp_SecureHash: sign(params) });

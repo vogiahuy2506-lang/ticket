@@ -2,7 +2,7 @@
  * Payment provider abstraction.
  *
  * Two implementations:
- *  - VnPayProvider  - the real sandbox gateway (sandbox.vnpay.vn)
+ *  - VnPayProvider  - the real sandbox gateway (sandbox.vnpayment.vn)
  *  - MockProvider   - a local simulator that mimics the redirect + IPN flow,
  *                     used so the app can be run and demoed without real
  *                     sandbox credentials. NOT production-ready, and clearly
@@ -24,6 +24,12 @@ export interface CreatePaymentInput {
   orderInfo: string;
   /** the buyer's IP address, in the shape the gateway accepts */
   clientIp: string;
+  /**
+   * When the order was created. It is sent as `vnp_CreateDate`, and
+   * `querydr` has to name the same date later (`vnp_TransactionDate`), so
+   * it comes from the order rather than from the clock. Defaults to now.
+   */
+  createdAt?: Date;
   returnUrl: string;
   /**
    * The IPN endpoint.
@@ -81,5 +87,12 @@ export interface PaymentProvider {
    * arrives, and without a second source the order would wait for the
    * reservation to expire even though the buyer had paid.
    */
-  queryTransaction?(gatewayRef: string): Promise<VerifyResult | null>;
+  queryTransaction?(input: QueryTransactionInput): Promise<VerifyResult | null>;
+}
+
+export interface QueryTransactionInput {
+  /** the `vnp_TxnRef` the payment was created with */
+  gatewayRef: string;
+  /** when the order was created - the `vnp_CreateDate` of the payment */
+  createdAt: Date;
 }

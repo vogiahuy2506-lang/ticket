@@ -260,7 +260,8 @@ cannot hide a gap again.
 ### Credentials
 
 Sandbox credentials are **not** in this repository. Register at
-<https://sandbox.vnpay.vn> and put them into your local `.env`:
+<https://sandbox.vnpayment.vn/devreg/> (VNPay emails the `vnp_TmnCode` and
+the `vnp_HashSecret`) and put them into your local `.env`:
 
 ```
 VNPAY_MERCHANT_CODE=...
@@ -319,7 +320,30 @@ ngrok http 3101
 ```
 
 The public URL is printed by ngrok; put it into `PUBLIC_BASE_URL` and
-restart the API.
+restart the API. A free ngrok account comes with one static domain
+(`ngrok http 3101 --url https://<yours>.ngrok-free.dev`), and that is the
+better choice here: the IPN URL is registered in the merchant portal, so a
+tunnel URL that changes on every restart has to be registered again each
+time.
+
+### Registering the IPN URL
+
+In the sandbox the merchant registers the IPN URL itself:
+
+1. Log in to the Merchant Admin, <https://sandbox.vnpayment.vn/merchantv2/>,
+   with the e-mail and password used at registration.
+2. Open the terminal's configuration page ("Thay đổi thông tin cấu
+   hình", reachable directly at
+   <https://sandbox.vnpayment.vn/merchantv2/Account/TerminalEdit.htm>).
+3. Set **IPN Url** to `{PUBLIC_BASE_URL}/api/ipn/vnpay`, **Giao thức IPN**
+   to `GET` and **Kiểu mã hóa** to `HMACSHA512`, then save
+   (**Hoàn thành**).
+
+The page's **Test call IPN** link sends a request signed with the
+placeholder `vnp_SecureHash=hash_test`, so the correct answer is
+`{"RspCode":"97","Message":"Invalid signature"}`. Seeing that answer on the
+page proves the gateway reaches the app through the tunnel. A `00` here
+would be the bug.
 
 ### Verifying locally
 
@@ -351,6 +375,34 @@ To exercise it without the real gateway, `apps/api/scripts/e2e.ts` signs a
 payload exactly the way VNPay does and posts it three times, proving the
 handler is idempotent: the money is booked once and the replays are
 answered with `02`.
+
+### What a run against the live sandbox showed (2026-10-28)
+
+One purchase of a 900,000 VND ticket, paid with the NCB test card:
+
+- **The signed payment URL is accepted.** The gateway redirects to its
+  payment-method page (`PaymentMethod.html?token=...`), not to
+  `Error.html?code=70` (invalid signature).
+- **The IPN arrives and is applied.** VNPay called
+  `GET /api/ipn/vnpay` from `VNPAY GATEWAY/2.0` with
+  `vnp_ResponseCode=00`, `vnp_TransactionStatus=00` and
+  `vnp_Amount=99000000` (990,000 VND x 100). The app answered
+  `{"RspCode":"00","Message":"Confirm Success"}` and the order became
+  `PAID`.
+- **The ledger posted one balanced transaction.** `PAYMENT_CAPTURE` debits
+  `asset:gateway_cash` 990,000 and credits the seller's `pending` 855,000
+  and `revenue:platform_fee` 135,000. Debits minus credits over the whole
+  journal is 0.
+- **`querydr` does not work in the sandbox.** Every query came back as
+  `{"vnp_ResponseCode":"99","vnp_Message":"Unexpected error"}`, without a
+  checksum. That was the answer for the paid transaction, for an unpaid
+  one, for a deliberately wrong checksum and even for a merchant code that
+  does not exist. Since a wrong checksum and an unknown merchant get the
+  same answer, the request fails before the gateway looks at it. The
+  lost-IPN fallback (section 4) therefore could not be exercised live. The
+  app treats the answer as "cannot confirm": the order keeps its status,
+  and the API logs `the re-check did not apply the gateway answer` with
+  `code: "99"`.
 
 ### The demo walkthrough (5 minutes)
 
@@ -564,9 +616,11 @@ PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEAS
   status = 'SUCCEEDED'`) blocks a *successful* transaction id from being
   booked twice. The per-order constraint catches a replay of the same
   notification; the partial index catches the same gateway transaction id
-  arriving on a *different* order. The status filter matters: a declined
-  payment is reported with `vnp_TransactionNo = "0"`, so an unconditional
-  index would make every second decline collide.
+  arriving on a *different* order. The status filter is defensive: the
+  documentation does not say what `vnp_TransactionNo` a declined payment
+  carries, and if it is a shared placeholder such as `"0"`, an
+  unconditional index would make every second decline collide. (To be
+  confirmed against the sandbox.)
 - The IPN is rejected (no ledger write) if the signature does not match, if
   the amount differs from the order, or if the order is unknown. The
   rejection codes follow the official list: `97` invalid signature, `01`
@@ -671,7 +725,7 @@ asserted in `test/gaps.test.ts`.
 
 **A `querydr` answer may never cancel an order.** The query answers
 "did this transaction succeed?", and a payment that the gateway has not
-seen yet is reported as *not found* (code `04`) - that is not a failure,
+seen yet is reported as *not found* (code `91`) - that is not a failure,
 the buyer is simply still on the payment page. If such an answer were
 applied like a notification, the order would be marked `FAILED` and the
 tickets given back *while the buyer is paying*: the money would arrive
@@ -687,6 +741,37 @@ money that was only ever paid once. The rule lives in
 The `querydr` call itself has a **10 second timeout** (`fetch` +
 `AbortSignal.timeout`), so a hung gateway cannot hold the order page
 open; the re-check then simply reports the persisted status.
+
+**`querydr` is not signed like `pay`.** Both the request and the
+response checksum are HMAC-SHA512 over a *fixed* list of values joined by
+`|` (request: `RequestId|Version|Command|TmnCode|TxnRef|TransactionDate|
+CreateDate|IpAddr|OrderInfo`), not the sorted `key=value` list. Three
+other details from the documentation:
+
+- `vnp_TransactionDate` is the **payment's** `vnp_CreateDate`, not the
+  time of the query. The payment is therefore created with the order's
+  `created_at`, so the query can name the same date again.
+- `vnp_RequestId` must not repeat within a day (`94` otherwise), so it
+  is a fresh random id per query.
+- `vnp_ResponseCode` says whether the *query* worked (`91` = no such
+  transaction); `vnp_TransactionStatus` says whether the buyer paid.
+
+`test/provider.test.ts` computes the expected checksums with
+`node:crypto` and the field order copied from the documentation, not with
+the app's own helpers. The response field order in the documentation has
+a typo (a missing separator), so it has to be confirmed against the
+sandbox - which was not possible: the sandbox answers every `querydr` with
+an unsigned `99` (see section 3). An answer without a valid checksum is
+never applied; it comes back with `signatureValid: false` so its code can
+be logged.
+
+**The order page asks the gateway only twice.** The page polls every 3
+seconds, but a poll only reads the database. The gateway is asked
+(`POST /api/orders/:id/recheck?gateway=1`) once when the page opens - the
+buyer has just come back from the gateway - and whenever the buyer presses
+**Kiểm tra lại trạng thái**. Asking on every poll would call the gateway
+every 3 seconds for as long as the page stays open, and forever for an
+`EXPIRED` order that was never paid.
 
 ### The wallet only shows the user's own transactions
 
@@ -934,9 +1019,12 @@ Honest list:
   gateway's refund API and post the reversing entry by hand. Cancelling a
   pending order is *not* a refund - it is only possible before the money
   arrives.
-- **The gateway's `querydr` is only used by the re-check button.** A lost
-  IPN is recovered when the buyer (or an operator) presses it, or when the
-  order page polls. Nothing reconciles the whole order book against the
+- **The gateway's `querydr` is only used by the order page.** A lost IPN
+  is recovered when the buyer opens the order page or presses the
+  re-check button (the 3-second polls only read the database). The
+  `querydr` call is tested against the documentation and a fake server
+  only: the live sandbox answers every query with an unsigned `99`
+  (section 3). Nothing reconciles the whole order book against the
   gateway's transaction list on a schedule, so an order nobody ever
   revisits stays unsettled until a human looks at the dashboard.
 - **No real payouts.** Releasing escrow only moves money between the
@@ -987,11 +1075,10 @@ REMOTE_REPO=your-account/your-repo ./scripts/push-to-github.sh
 
 1. Real auth (session + role) and lock the mutation endpoints, including
    the API ones - right now the role check only exists in the web layer.
-2. Switch on the VNPay sandbox, register the IPN URL in the merchant
-   portal, and make the IPN handler the single source of truth for order
-   state. The `querydr` fallback already exists, but it is only triggered
-   by a manual re-check - a background poll would recover a lost
-   notification without waiting for the buyer.
+2. A background job that asks the gateway (`querydr`) about pending and
+   expired orders, so a lost notification is recovered without waiting
+   for the buyer to open the order page - and a re-test of `querydr`
+   once the sandbox answers it.
 3. Versioned migrations (node-pg-migrate or Drizzle) + an append-only audit
    log + a hash chain over the journal.
 4. Refund flow with a reverse posting, including who absorbs the gateway fee.
@@ -1181,9 +1268,10 @@ Desktop's disk was full, so ports had to be made configurable).
   show *Tiền phải hoàn*. A migration moves any legacy balance onto the
   right buyer's account with a balanced `REFUND_REASSIGN` entry.
 - The idempotency constraint on `payments` was `UNIQUE (provider,
-  provider_txn_id)`. That is too strong for a decline, because VNPay
-  reports a declined payment with `vnp_TransactionNo = "0"` - every
-  second decline in the whole system would collide. It is now `UNIQUE
+  provider_txn_id)`. That may be too strong for a decline: the
+  documentation does not say what `vnp_TransactionNo` a declined payment
+  carries, and if it is a shared placeholder such as `"0"`, every second
+  decline in the whole system would collide. It is now `UNIQUE
   (provider, order_id, provider_txn_id)` (a replay of the same
   notification for the same order) plus a partial unique index on
   `(provider, provider_txn_id) WHERE status = 'SUCCEEDED'` (the same
@@ -1226,7 +1314,8 @@ There are three layers, and each one covers what the others cannot.
 
 ### Integration tests (a real database)
 
-`npm run test:api` - 113 tests that run against a real Postgres, in a
+`npm run test:api` runs the whole API suite (123 tests). The 82 in the
+files below run against a real Postgres, in a
 **private schema per test file** that is dropped afterwards. The
 developer's own database is never touched, and the tests can be run as
 often as you like.
@@ -1262,6 +1351,14 @@ gateway does not accept it. It also asserts that the real provider and the
 local mock send the **same** parameter set. That last assertion is the
 important one: the mock used to be more forgiving than the real gateway,
 which is how a protocol mismatch could survive a fully green test suite.
+
+The same file covers `querydr` against a stubbed `fetch`: the `|`-joined
+request checksum (recomputed with `node:crypto`, not the app's helpers),
+the documented parameter set, `vnp_TransactionDate` equal to the
+payment's `vnp_CreateDate`, a fresh `vnp_RequestId` per query, and the
+reading of a signed answer. An answer that is signed the `pay` way,
+tampered with, or unsigned - the sandbox's own `99` - comes back
+untrusted, with no amount and no transaction number that could be booked.
 
 ### End-to-end (the real HTTP flow)
 

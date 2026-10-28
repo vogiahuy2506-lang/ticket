@@ -61,3 +61,24 @@ export function signVnParams(
     .update(buildHashData(params), 'utf8')
     .digest('hex');
 }
+
+/**
+ * The server-to-server APIs (`querydr`, `refund`) sign differently from
+ * `pay`: the hash data is a *fixed* list of values joined by `|`, in the
+ * order the documentation gives - not the sorted `key=value` list. Signing
+ * a query the `pay` way makes the gateway answer `97` (invalid checksum).
+ */
+export function signVnPipe(values: readonly string[], secretKey: string): string {
+  return crypto
+    .createHmac('sha512', secretKey)
+    .update(values.join('|'), 'utf8')
+    .digest('hex');
+}
+
+/** Compares two hex signatures without leaking where they differ. */
+export function sameSignature(expected: string, received: string): boolean {
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(received, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}

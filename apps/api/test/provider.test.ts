@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockProvider } from '../src/payments/mock.js';
 import { VnPayProvider, normalizeClientIp } from '../src/payments/vnpay.js';
+import { signVnParams } from '../src/payments/vnpay-crypto.js';
 import { toGatewayRef, toVnSafeText } from '@tce/shared';
 
 /**
@@ -37,7 +39,6 @@ const VNPCAY_CONFIG = {
   vnpayApiUrl: 'https://sandbox.vnpayment.vn/merchant_webapi/api/transaction',
   merchantCode: 'TESTMRC',
   secretKey: 'test-secret',
-  returnUrl: 'http://localhost:3000/orders/x',
   notifyUrl: 'https://tunnel.example/api/ipn/vnpay',
 };
 
@@ -178,6 +179,193 @@ describe('VnPayProvider.createPayment', () => {
     const ok = await provider.createPayment({ ...INPUT, amountVnd: 9_999_999_999 });
     const url = new URL(ok.redirectUrl);
     expect(url.searchParams.get('vnp_Amount')!.length).toBeLessThanOrEqual(12);
+  });
+});
+
+/**
+ * The `querydr` call, checked against the official documentation
+ * (https://sandbox.vnpayment.vn/apis/docs/truy-van-hoan-tien/querydr&refund.html).
+ *
+ * The expected checksums are computed here with `node:crypto` and the
+ * field order copied from the documentation - not with the app's own
+ * helpers - so the test compares the code with the specification rather
+ * than with itself.
+ */
+describe('VnPayProvider.queryTransaction', () => {
+  // 15:15:30 in Vietnam.
+  const CREATED_AT = new Date('2026-01-15T08:15:30.123Z');
+  const QUERY = { gatewayRef: INPUT.gatewayRef, createdAt: CREATED_AT };
+
+  const REQUEST_ORDER = [
+    'vnp_RequestId',
+    'vnp_Version',
+    'vnp_Command',
+    'vnp_TmnCode',
+    'vnp_TxnRef',
+    'vnp_TransactionDate',
+    'vnp_CreateDate',
+    'vnp_IpAddr',
+    'vnp_OrderInfo',
+  ];
+  const RESPONSE_ORDER = [
+    'vnp_ResponseId',
+    'vnp_Command',
+    'vnp_ResponseCode',
+    'vnp_Message',
+    'vnp_TmnCode',
+    'vnp_TxnRef',
+    'vnp_Amount',
+    'vnp_BankCode',
+    'vnp_PayDate',
+    'vnp_TransactionNo',
+    'vnp_TransactionType',
+    'vnp_TransactionStatus',
+    'vnp_OrderInfo',
+    'vnp_PromotionCode',
+    'vnp_PromotionAmount',
+  ];
+
+  const pipeHash = (values: string[]) =>
+    createHmac('sha512', VNPCAY_CONFIG.secretKey).update(values.join('|')).digest('hex');
+
+  const PAID: Record<string, string> = {
+    vnp_ResponseId: '4f2a',
+    vnp_Command: 'querydr',
+    vnp_ResponseCode: '00',
+    vnp_Message: 'QueryDR Success',
+    vnp_TmnCode: 'TESTMRC',
+    vnp_TxnRef: INPUT.gatewayRef,
+    vnp_Amount: '82500000',
+    vnp_BankCode: 'NCB',
+    vnp_PayDate: '20261028151800',
+    vnp_TransactionNo: '14123456',
+    vnp_TransactionType: '01',
+    vnp_TransactionStatus: '00',
+    vnp_OrderInfo: 'Thanh toan don hang c8157c9f',
+    vnp_PromotionCode: '',
+    vnp_PromotionAmount: '',
+  };
+  const signed = (fields: Record<string, string>) => ({
+    ...fields,
+    vnp_SecureHash: pipeHash(RESPONSE_ORDER.map((k) => fields[k] ?? '')),
+  });
+
+  let sent: Record<string, string>[];
+  let answer: Record<string, unknown>;
+
+  beforeEach(() => {
+    sent = [];
+    answer = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        sent.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify(answer), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('signs the request as the documented |-joined field list', async () => {
+    await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY);
+    const req = sent[0]!;
+
+    expect(req.vnp_SecureHash).toBe(pipeHash(REQUEST_ORDER.map((k) => req[k]!)));
+  });
+
+  it('sends exactly the documented parameters, every one of them filled', async () => {
+    await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY);
+    const req = sent[0]!;
+
+    expect(Object.keys(req).sort()).toEqual([...REQUEST_ORDER, 'vnp_SecureHash'].sort());
+    for (const key of REQUEST_ORDER) {
+      expect(req[key], `${key} is empty`).toBeTruthy();
+    }
+    expect(req.vnp_Command).toBe('querydr');
+    expect(req.vnp_IpAddr.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it('names the date of the payment, not the date of the query', async () => {
+    const provider = new VnPayProvider(VNPCAY_CONFIG);
+    const pay = await provider.createPayment({ ...INPUT, createdAt: CREATED_AT });
+    const payCreateDate = new URL(pay.redirectUrl).searchParams.get('vnp_CreateDate');
+
+    await provider.queryTransaction(QUERY);
+
+    // "giong vnp_CreateDate cua vnp_Command=pay"
+    expect(payCreateDate).toBe('20260115151530');
+    expect(sent[0]!.vnp_TransactionDate).toBe(payCreateDate);
+    expect(sent[0]!.vnp_CreateDate).not.toBe(payCreateDate);
+  });
+
+  it('uses a new request id for every query of the same order', async () => {
+    const provider = new VnPayProvider(VNPCAY_CONFIG);
+    await provider.queryTransaction(QUERY);
+    await provider.queryTransaction(QUERY);
+
+    // Alphanumeric[1,32], and never repeated within the day (`94` otherwise).
+    const [a, b] = sent.map((r) => r.vnp_RequestId!);
+    expect(a).toMatch(/^[A-Za-z0-9]{1,32}$/);
+    expect(b).toMatch(/^[A-Za-z0-9]{1,32}$/);
+    expect(a).not.toBe(b);
+  });
+
+  it('reads a correctly signed answer', async () => {
+    answer = signed(PAID);
+    const result = await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY);
+
+    expect(result).toMatchObject({
+      signatureValid: true,
+      ok: true,
+      amountVnd: 825_000,
+      transactionId: '14123456',
+    });
+  });
+
+  it('reads an answer whose numbers arrive as JSON numbers', async () => {
+    answer = { ...signed(PAID), vnp_Amount: 82_500_000 };
+    const result = await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY);
+
+    expect(result?.amountVnd).toBe(825_000);
+  });
+
+  it('reports a transaction the gateway does not know as not paid', async () => {
+    answer = signed({ ...PAID, vnp_ResponseCode: '91', vnp_TransactionStatus: '' });
+    const result = await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY);
+
+    expect(result).toMatchObject({ signatureValid: true, ok: false, code: '91' });
+  });
+
+  // A rejected answer must not carry anything that could be booked.
+  const expectUntrusted = (result: Awaited<ReturnType<VnPayProvider['queryTransaction']>>) => {
+    expect(result).toMatchObject({ signatureValid: false, ok: false });
+    expect(result?.amountVnd).toBeUndefined();
+    expect(result?.transactionId).toBeUndefined();
+  };
+
+  it('rejects an answer signed the pay way', async () => {
+    answer = { ...PAID, vnp_SecureHash: signVnParams(PAID, VNPCAY_CONFIG.secretKey) };
+    expectUntrusted(await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY));
+  });
+
+  it('rejects an answer that was tampered with', async () => {
+    answer = { ...signed(PAID), vnp_Amount: '99900000' };
+    expectUntrusted(await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY));
+  });
+
+  it('keeps the code of an unsigned error answer, so it can be logged', async () => {
+    // What the sandbox actually returns to every querydr (seen 2026-10-28).
+    answer = { vnp_ResponseCode: '99', vnp_Message: 'Unexpected error' };
+    const result = await new VnPayProvider(VNPCAY_CONFIG).queryTransaction(QUERY);
+
+    expectUntrusted(result);
+    expect(result).toMatchObject({ code: '99', message: 'Unexpected error' });
   });
 });
 

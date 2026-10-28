@@ -341,7 +341,7 @@ export function canQueryGateway(status: string): boolean {
  * of truth and it can be wrong in ways an IPN cannot:
  *
  *  - the query answers about a transaction the gateway may not even know
- *    yet. A brand new payment is reported as "not found" (code 04), which
+ *    yet. A brand new payment is reported as "not found" (code 91), which
  *    is **not** the same thing as "the buyer declined". Applying that
  *    would cancel the order and give the tickets back *while the buyer is
  *    paying* - the money would arrive afterwards for an order that is no
