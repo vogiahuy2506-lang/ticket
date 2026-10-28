@@ -10,6 +10,10 @@ double-entry ledger.
 - **Payment**: VNPay sandbox (`sandbox.vnpayment.vn`)
 - **Accounting**: double-entry ledger, every balance derived from the journal
 
+> **Looking for the demo?** [`TESTING.md`](./TESTING.md) is a step-by-step
+> walkthrough: what to click, what to expect, and the SQL that proves each
+> claim - mapped one-to-one onto the brief.
+
 ---
 
 ## 1. Quick start
