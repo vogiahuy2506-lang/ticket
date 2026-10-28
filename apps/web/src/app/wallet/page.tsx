@@ -1,6 +1,6 @@
 import { api } from '@/lib/api';
 import { getCurrentUser } from '@/lib/session';
-import { formatVnd, ledgerEntryTitle } from '@tce/shared';
+import { formatDateTimeVi, formatVnd, ledgerEntryTitle } from '@tce/shared';
 import { Badge, EmptyState, MoneyRow, PageHeader, SectionTitle } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
@@ -93,7 +93,7 @@ export default async function WalletPage() {
                   {ledgerEntryTitle(txn.refType, txn.refId)}
                 </p>
                 <span className="shrink-0 text-[11px] text-ink-400">
-                  {new Date(txn.createdAt).toLocaleString('vi-VN', {
+                  {formatDateTimeVi(txn.createdAt, {
                     dateStyle: 'medium',
                     timeStyle: 'short',
                   })}

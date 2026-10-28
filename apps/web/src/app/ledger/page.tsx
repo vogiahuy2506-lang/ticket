@@ -1,5 +1,5 @@
 import { apiFetch } from '@/lib/api';
-import { formatVnd, ledgerEntryTitle } from '@tce/shared';
+import { formatDateTimeVi, formatVnd, ledgerEntryTitle } from '@tce/shared';
 import { Badge, MoneyRow, PageHeader, SectionTitle } from '@/components/ui';
 import { AccountCode } from '@/components/AccountCode';
 
@@ -216,7 +216,7 @@ export default async function LedgerPage() {
                     {ledgerEntryTitle(txn.refType, txn.refId)}
                   </p>
                   <p className="mt-0.5 text-xs text-ink-400">
-                    {new Date(txn.createdAt).toLocaleString('vi-VN', {
+                    {formatDateTimeVi(txn.createdAt, {
                       dateStyle: 'medium',
                       timeStyle: 'medium',
                     })}

@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { api } from '@/lib/api';
 import { getCurrentUser } from '@/lib/session';
 import { completeEvent } from '@/app/actions';
-import { formatVnd } from '@tce/shared';
+import { formatDateTimeVi, formatVnd } from '@tce/shared';
 import { Badge, EmptyState, PageHeader } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
@@ -107,7 +107,7 @@ export default async function HomePage({
                           clipRule="evenodd"
                         />
                       </svg>
-                      {new Date(event.starts_at).toLocaleString('vi-VN', {
+                      {formatDateTimeVi(event.starts_at, {
                         dateStyle: 'medium',
                         timeStyle: 'short',
                       })}

@@ -353,6 +353,14 @@ With `MOCK_GATEWAY=true` (the default) the whole flow runs locally:
 8. Open **Lịch sử giao dịch** to see every journal entry and the derived
    balances, with a line that says the ledger is *cân bằng* (balanced).
 
+**When every ticket is sold out.** The seeded catalogue is finite, so once
+you have bought every ticket there is nothing left to try. Open
+**Quản trị** and press **Tạo sự kiện mới** (the *Thêm vé mới* section): fill
+in the name, the venue and the start time - a local Vietnamese wall-clock
+time - add as many listing groups as you like, and press **Tạo sự kiện**.
+The browser goes straight to the new event page, ready to sell. Creating an
+event moves no money, so the ledger stays untouched.
+
 ### Using the storefront
 
 The storefront is a small demo with no real authentication. The dropdown in
@@ -366,7 +374,7 @@ on the page is rendered for that user.
 | **Kết quả thanh toán** (`/orders/<id>`) | The order status, the money split and every IPN the gateway sent for this order. The page polls the API every 3 seconds while the order is still waiting for the gateway. |
 | **Ví của tôi** (`/wallet`) | The acting user's wallet: money waiting for release (escrow), money available to withdraw, and the transaction history. |
 | **Lịch sử giao dịch** (`/ledger`) | The platform-wide double-entry journal: the balance of every account and every posted entry. |
-| **Quản trị** (`/admin`) | The operations dashboard. Only shown to the `admin` role. |
+| **Quản trị** (`/admin`) | The operations dashboard. Only shown to the `admin` role. It also has **Tạo sự kiện mới**, so fresh tickets can be put on sale when the seeded ones are sold out. |
 
 **Reading the money model.** The buyer pays the listing price plus a 10%
 service fee; the seller receives the price minus 5%; the platform keeps the
@@ -580,6 +588,7 @@ packages/shared/            money helpers, fee model, zod schemas, unit tests
   src/fees.ts              the 10% / 5% split and the rounding rule
   src/account-code.ts      shortening an account code for display
   src/ledger-labels.ts     the Vietnamese headline of a journal entry
+  src/datetime.ts          Vietnam-time formatting (fixed +07:00 offset)
   src/schemas.ts           the zod schemas shared by the API and the web
 apps/api/
   src/db/                   schema.sql, migrate, seed, accounts, isolated
@@ -587,12 +596,14 @@ apps/api/
   src/services/ledger.ts    double-entry posting, balances, audit
   src/services/orders.ts    order lifecycle, IPN handling, escrow release
   src/services/admin.ts     the operations dashboard aggregates
+  src/services/events.ts    creating a new event with its listings
   src/payments/vnpay-crypto.ts  the VNPay signing algorithm (one shared copy)
   src/payments/vnpay.ts     VNPay sandbox adapter (sign / verify)
   src/payments/mock.ts      local gateway simulator
   src/routes/               HTTP API + the mock payment page
   scripts/e2e-run.ts       boots the API and runs the e2e check in one command
   scripts/e2e.ts           the money-flow assertions themselves
+  scripts/audit-ledger.ts  checks the journal for imbalances
   test/                    unit + integration tests (a private schema each)
     helpers/db.ts          creates the throwaway schema, points the app at it
     helpers/fixtures.ts    the rows a test needs (users, events, listings)
@@ -601,6 +612,7 @@ apps/api/
     orders.test.ts         the checkout rules
     ipn.test.ts            the gateway notification
     http.test.ts           the HTTP surface and the response codes
+    create-event.test.ts   creating a new event and its listings
     invariants.test.ts     the money invariants
     legacy-text.test.ts    the repair of the unaccented names
 apps/web/
@@ -610,8 +622,8 @@ apps/web/
   src/app/wallet/           pending / available balances
   src/app/ledger/           the journal and all account balances
   src/app/admin/            the operations dashboard (admin only)
-  src/app/actions.ts        server actions: checkout, switch user, complete event
-  src/components/           ListingCheckoutForm, AccountCode, the shared UI
+  src/app/actions.ts        server actions: checkout, switch user, create event
+  src/components/           ListingCheckoutForm, AccountCode, CreateEventForm
 scripts/
   dev.sh                    starts the stack, freeing the ports it needs first
   dev-local.sh              runs the apps on the host against the compose db
@@ -958,13 +970,16 @@ There are three layers, and each one covers what the others cannot.
 - `packages/shared/test/account-code.test.ts` - the shortening of an account
   code for display: the UUID is cut to its first eight characters, the
   meaningful parts are kept, and shortening twice changes nothing.
+- `packages/shared/test/datetime.test.ts` - the Vietnam-time helpers: the
+  fixed +07:00 conversion between a local wall-clock time and UTC, and the
+  formatting that does not depend on the timezone of the host.
 - `apps/api/test/ledger.test.ts` - the VNPay signature algorithm (a tampered
   payload must be rejected) and the guardrails of `postTransaction` (an
   unbalanced or single-line posting must throw).
 
 ### Integration tests (a real database)
 
-`npm run test:api` - 68 tests that run against a real Postgres, in a
+`npm run test:api` - 74 tests that run against a real Postgres, in a
 **private schema per test file** that is dropped afterwards. The
 developer's own database is never touched, and the tests can be run as
 often as you like.
@@ -981,6 +996,7 @@ and still be safe.
 | `test/http.test.ts` | the HTTP surface: every rejection code (`400`, `404`, `409`), the IPN response codes (`01`, `02`, `04`, `97`, `99`), the escrow release, the cancellation of unpaid orders, the reconciliation log, and the append-only guarantee |
 | `test/invariants.test.ts` | the money invariants over a wide grid of prices and quantities, and a long run of buy-pay-release cycles that must end perfectly solvent |
 | `test/legacy-text.test.ts` | the repair of names and account labels that an older version wrote without Vietnamese diacritics |
+| `test/create-event.test.ts` | creating a new event: the local start time is stored with the +07:00 offset, a listing must belong to a real seller, and no money moves |
 
 Two of these tests found real bugs while they were being written (see
 section 8).

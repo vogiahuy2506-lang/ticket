@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { api } from '@/lib/api';
 import { requireRole } from '@/lib/session';
-import { formatVnd } from '@tce/shared';
+import { formatDateTimeVi, formatVnd } from '@tce/shared';
 import { completeEvent } from '@/app/actions';
+import { CreateEventForm } from '@/components/CreateEventForm';
 import {
   Badge,
   EmptyState,
@@ -55,11 +56,16 @@ export default async function AdminPage() {
     );
   }
 
-  const [overview, { orders }, { events: rawEvents }] = await Promise.all([
+  const [overview, { orders }, { events: rawEvents }, { users }] = await Promise.all([
     api.adminOverview(),
     api.adminOrders(),
     api.adminPaymentEvents(),
+    api.users(),
   ]);
+
+  // A listing is always sold by an existing seller, because the seller's
+  // escrow accounts have to exist before any money can be parked in them.
+  const sellers = users.filter((u) => u.role === 'seller');
 
   return (
     <div className="space-y-6">
@@ -200,7 +206,7 @@ export default async function AdminPage() {
                       {e.eventName}
                     </Link>
                     <p className="mt-0.5 text-xs text-ink-500">
-                      {new Date(e.startsAt).toLocaleString('vi-VN', {
+                      {formatDateTimeVi(e.startsAt, {
                         dateStyle: 'medium',
                         timeStyle: 'short',
                       })}
@@ -224,6 +230,28 @@ export default async function AdminPage() {
               </article>
             ))}
           </div>
+        )}
+      </section>
+
+      {/* ----------------------------------------------- new event */}
+      {/*
+        The seeded catalogue is finite. Once every ticket is sold out there
+        is nothing left to test, so the operator can put fresh tickets on
+        sale here. No money moves: an event is a catalogue entry, not a
+        financial event.
+      */}
+      <section className="space-y-3">
+        <SectionTitle
+          title="Thêm vé mới"
+          hint="Tạo sự kiện mới kèm các nhóm vé để bán tiếp."
+        />
+        {sellers.length === 0 ? (
+          <EmptyState
+            title="Chưa có người bán nào"
+            hint="Cần ít nhất một người bán để tạo nhóm vé."
+          />
+        ) : (
+          <CreateEventForm sellers={sellers} />
         )}
       </section>
 
@@ -325,7 +353,7 @@ export default async function AdminPage() {
                     </p>
                     <p className="mt-0.5 truncate text-xs text-ink-400">
                       {e.provider_txn_id ?? '-'} ·{' '}
-                      {new Date(e.received_at).toLocaleString('vi-VN', {
+                      {formatDateTimeVi(e.received_at, {
                         dateStyle: 'short',
                         timeStyle: 'medium',
                       })}

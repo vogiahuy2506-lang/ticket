@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { api } from '@/lib/api';
+import { formatDateTimeVi } from '@tce/shared';
 import { Badge, EmptyState, PageHeader } from '@/components/ui';
 import { ListingCheckoutForm } from '@/components/ListingCheckoutForm';
 
@@ -33,7 +34,7 @@ export default async function EventPage({
           <span className="flex flex-col gap-0.5">
             <span>{event.venue}</span>
             <span>
-              {new Date(event.starts_at).toLocaleString('vi-VN', {
+              {formatDateTimeVi(event.starts_at, {
                 dateStyle: 'full',
                 timeStyle: 'short',
               })}

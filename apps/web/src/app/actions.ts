@@ -120,3 +120,85 @@ export async function completeEvent(formData: FormData): Promise<void> {
     revalidatePath('/', 'layout');
   }
 }
+
+/**
+ * Creates a new event with its listings.
+ *
+ * Decision (brief was silent): the brief has no event-creation flow, but
+ * the seeded catalogue is finite - once every ticket is sold out there is
+ * nothing left to test. The operator gets a way to put fresh tickets on
+ * sale.
+ *
+ * Only an operator (admin) may do this, and the check is on the server: a
+ * Next.js server action is an HTTP endpoint, so hiding the button is not
+ * enough on its own.
+ *
+ * The form sends parallel arrays (`listingTitle`, `listingQuantity`, ...),
+ * so the rows are zipped back together here. A mismatch - a title without a
+ * quantity - is rejected rather than silently dropped.
+ */
+export async function createEvent(
+  formData: FormData,
+): Promise<{ ok: true; eventId: string } | { ok: false; message: string }> {
+  const user = await getCurrentUser();
+  if (!user || user.role !== 'admin') {
+    return { ok: false, message: 'Chỉ quản trị viên mới tạo được sự kiện' };
+  }
+
+  const titles = formData.getAll('listingTitle').map(String);
+  const quantities = formData.getAll('listingQuantity').map(String);
+  const prices = formData.getAll('listingPrice').map(String);
+
+  // The seller is per row, so the field names carry the row index. They
+  // arrive in the order the form rendered them, but the index is read back
+  // from the name to be safe.
+  const sellersByIndex = new Map<number, string>();
+  for (const key of formData.keys()) {
+    const m = /^listingSeller-(\d+)$/.exec(key);
+    if (m) sellersByIndex.set(Number(m[1]), String(formData.get(key)));
+  }
+
+  if (titles.length === 0) {
+    return { ok: false, message: 'Cần ít nhất một nhóm vé' };
+  }
+  if (titles.length !== quantities.length || titles.length !== prices.length) {
+    return { ok: false, message: 'Dữ liệu nhóm vé không hợp lệ' };
+  }
+
+  const listings = titles.map((title, i) => ({
+    sellerId: sellersByIndex.get(i) ?? '',
+    title,
+    quantityTotal: Number(quantities[i]),
+    priceVnd: Number(prices[i]),
+  }));
+
+  const res = await fetch(`${API_BASE}/api/admin/events`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: String(formData.get('name') ?? ''),
+      venue: String(formData.get('venue') ?? ''),
+      startsAtLocal: String(formData.get('startsAtLocal') ?? ''),
+      listings,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      message?: string;
+      error?: string;
+    };
+    return {
+      ok: false,
+      message:
+        body.message ??
+        (body.error === 'SELLER_NOT_FOUND'
+          ? 'Người bán không tồn tại trong hệ thống'
+          : 'Không tạo được sự kiện'),
+    };
+  }
+
+  const { event } = (await res.json()) as { event: { eventId: string } };
+  revalidatePath('/', 'layout');
+  return { ok: true, eventId: event.eventId };
+}

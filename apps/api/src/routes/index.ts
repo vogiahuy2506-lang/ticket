@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { checkoutSchema, computeFees } from '@tce/shared';
+import { checkoutSchema, computeFees, createEventSchema } from '@tce/shared';
 import { providerFor, type AppDeps } from './helpers.js';
 import {
   createOrder,
@@ -16,6 +16,7 @@ import {
   listTransactions,
 } from '../services/ledger.js';
 import { getAdminOverview, listAllOrders } from '../services/admin.js';
+import { createEvent, CreateEventError } from '../services/events.js';
 import { registerMockGatewayRoutes } from './mock-gateway.js';
 import { withTx } from '../db/types.js';
 
@@ -371,6 +372,40 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/admin/orders', async () => {
     return { orders: await listAllOrders(sql, 100) };
+  });
+
+  /**
+   * Creates a new event with its listings.
+   *
+   * Decision (brief was silent): the demo catalogue is finite, so once every
+   * ticket is sold out there is nothing left to test. The operator needs a
+   * way to put fresh tickets on sale, and this is that way.
+   *
+   * Note (brief was silent): like the other admin endpoints, the API does
+   * not check a role - the storefront gates the page on the selected user.
+   * No money moves here; the ledger is not touched.
+   */
+  app.post('/api/admin/events', async (req, reply) => {
+    const parsed = createEventSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'INVALID_INPUT',
+        detail: parsed.error.flatten(),
+      });
+    }
+
+    try {
+      const created = await createEvent(sql, parsed.data);
+      return { event: created };
+    } catch (err) {
+      if (err instanceof CreateEventError) {
+        return reply.code(err.statusCode).send({
+          error: err.code,
+          message: err.message,
+        });
+      }
+      throw err;
+    }
   });
 
   /**
