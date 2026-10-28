@@ -5,9 +5,41 @@ const API_BASE_URL =
  * Server-side data access to the Node backend.
  * Every page that needs data is server-rendered (no client fetching).
  */
+/**
+ * An error from the backend, with the HTTP status attached.
+ *
+ * The distinction matters: a `404` means "this order does not exist" and
+ * the page should say so, while a `500` means the API is broken and the
+ * page should say *that* instead of pretending the order is missing. A
+ * bare `catch` cannot tell the two apart - it turned every outage into a
+ * "page not found".
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(status: number, path: string, body: string) {
+    super(`API ${path} failed with ${status}: ${body.slice(0, 300)}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.path = path;
+  }
+}
+
+/**
+ * Whether the error means "the thing does not exist".
+ *
+ * Only a 404 counts. Everything else - a 500, a refused connection, a
+ * timeout, a malformed response - is a fault of the system, not of the
+ * visitor, and must not be reported as a missing page.
+ */
+export function isNotFound(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404;
+}
+
 export async function apiFetch<T>(
   path: string,
-  init?: RequestInit & { revalidate?: number },
+    init?: RequestInit & { revalidate?: number },
 ): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -20,7 +52,7 @@ export async function apiFetch<T>(
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`API ${path} failed with ${res.status}: ${body.slice(0, 300)}`);
+    throw new ApiError(res.status, path, body);
   }
   return (await res.json()) as T;
 }

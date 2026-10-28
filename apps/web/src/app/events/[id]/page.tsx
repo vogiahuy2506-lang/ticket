@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { api } from '@/lib/api';
+import { api, isNotFound } from '@/lib/api';
 import { formatDateTimeVi } from '@tce/shared';
 import { Badge, EmptyState, PageHeader } from '@/components/ui';
 import { ListingCheckoutForm } from '@/components/ListingCheckoutForm';
@@ -16,8 +16,10 @@ export default async function EventPage({
   let data;
   try {
     data = await api.event(id);
-  } catch {
-    notFound();
+  } catch (err) {
+    // Only a missing event is a "not found" page; a broken API is not.
+    if (isNotFound(err)) notFound();
+    throw err;
   }
 
   const { event, listings } = data;

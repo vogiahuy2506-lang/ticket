@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { api } from '@/lib/api';
+import { api, isNotFound } from '@/lib/api';
 import { getCurrentUser } from '@/lib/session';
 import { cancelOrder } from '@/app/actions';
 import { formatVnd } from '@tce/shared';
@@ -22,8 +22,12 @@ export default async function OrderPage({
   let data;
   try {
     data = await api.order(id);
-  } catch {
-    notFound();
+  } catch (err) {
+    // Only a missing order is a "not found" page. A broken API is a
+    // different problem, and reporting it as "no such order" would hide
+    // the outage from whoever is looking at the screen.
+    if (isNotFound(err)) notFound();
+    throw err;
   }
 
   const { order, fees, payments } = data;
