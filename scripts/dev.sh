@@ -9,7 +9,15 @@
 #   Bind for 0.0.0.0:55432 failed: port is already allocated
 #
 # This script stops the containers that hold the ports before starting the
-# stack, which is safe: they are throwaway demo containers.
+# stack, which is safe: they are throwaway demo containers. It also stops a
+# host-run server that holds the same ports, because Docker cannot publish
+# a port that is already taken:
+#
+#   ports are not available: exposing port TCP 0.0.0.0:3000: bind:
+#   address already in use
+#
+# The two ways of running the app (the Docker stack and `npm run dev` on
+# the host) are mutually exclusive - they want the same ports.
 #
 # Usage:
 #   ./scripts/dev.sh
@@ -39,6 +47,26 @@ for port in "$DB_PORT" "$API_PORT" "$WEB_PORT"; do
     echo "    stopping (port $port): $names"
     # shellcheck disable=SC2086
     docker rm -f $ids >/dev/null
+  fi
+done
+
+# A host-run server (`npm run dev`) holds the very same ports. Docker cannot
+# publish a port that is already taken, and the failure reads like a Docker
+# problem ("ports are not available ... address already in use") even though
+# the cause is a leftover `next dev` on the host. So the host processes are
+# stopped too - the two ways of running the app are mutually exclusive.
+for port in "$API_PORT" "$WEB_PORT"; do
+  pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$pids" ]; then
+    echo "    stopping local process(es) on port $port: $pids"
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    sleep 1
+    pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)"
+    if [ -n "$pids" ]; then
+      # shellcheck disable=SC2086
+      kill -9 $pids 2>/dev/null || true
+    fi
   fi
 done
 
