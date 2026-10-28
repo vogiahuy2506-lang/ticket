@@ -17,8 +17,12 @@
  * Environment:
  *   E2E_PORT      port for the temporary server (default 3199)
  *   E2E_EXTERNAL  set to 1 to use an already-running stack instead
+ *   E2E_KEEP_SCHEMA  set to 1 to keep the private schema (so a later step
+ *                  can audit the journal this run wrote). The name of the
+ *                  schema is written to E2E_SCHEMA_FILE.
  */
 
+import { writeFileSync } from 'node:fs';
 import { buildServer } from '../src/server.js';
 import { getSql } from '../src/db/client.js';
 import { migrate } from '../src/db/migrate.js';
@@ -106,6 +110,7 @@ async function main(): Promise<void> {
   // "E2E event ..." rows in the demo data, and the storefront would fill
   // up with events nobody booked.
   let isolated: IsolatedDb | null = null;
+  const keepSchema = process.env.E2E_KEEP_SCHEMA === '1';
   try {
     isolated = await createIsolatedDb('e2e');
     useIsolatedDb(isolated.sql);
@@ -132,7 +137,28 @@ async function main(): Promise<void> {
       await app.close();
     }
   } finally {
-    await isolated?.drop();
+    if (isolated && keepSchema) {
+      // The schema is kept so that a later step can audit the journal this
+      // run produced - the ledger audit has to look at the very rows the
+      // money flow wrote, not at an empty database. It is named in the
+      // output and can be dropped with:
+      //   DROP SCHEMA "<name>" CASCADE;
+      console.log(`[e2e] kept the private schema ${isolated.schema} for auditing`);
+
+      // The name is written to a file so that the next step does not have
+      // to guess it (the schema name is random).
+      const schemaFile = process.env.E2E_SCHEMA_FILE;
+      if (schemaFile) {
+        writeFileSync(schemaFile, isolated.schema, 'utf8');
+        console.log(`[e2e] schema name written to ${schemaFile}`);
+      }
+
+      // The connection is closed, but the schema itself stays.
+      await isolated.sql.end();
+      isolated = null;
+    } else {
+      await isolated?.drop();
+    }
   }
 }
 

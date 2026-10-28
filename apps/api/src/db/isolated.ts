@@ -100,6 +100,28 @@ async function dropSchema(url: string, schema: string): Promise<void> {
 }
 
 /**
+ * A client scoped to a schema that already exists.
+ *
+ * Used by the ledger audit, which has to look at the journal a previous
+ * run left behind - the e2e runner keeps its private schema for exactly
+ * this purpose when it is told to.
+ *
+ * The schema name is validated rather than quoted, because `search_path`
+ * is passed to Postgres as a raw string, not as an identifier.
+ */
+export async function createScopedDb(schema: string): Promise<Sql> {
+  if (!/^[a-z0-9_]+$/i.test(schema)) {
+    throw new Error(`Refusing to use an unsafe schema name: ${schema}`);
+  }
+
+  const url = loadConfig().databaseUrl;
+  return postgres(url, {
+    max: 2,
+    connection: { search_path: schema },
+  }) as unknown as Sql;
+}
+
+/**
  * Removes the rows a test run left behind in the *real* database.
  *
  * Only used by the "run against an already-running stack" mode, where there

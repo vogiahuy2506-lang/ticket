@@ -12,6 +12,7 @@
     "seed": "tsx src/db/seed.ts",
     "db:init": "tsx src/db/init.ts",
     "db:reset": "tsx src/db/reset.ts",
+    "audit": "tsx scripts/audit-ledger.ts",
     "test": "vitest run",
     "e2e": "tsx scripts/e2e-run.ts"
   },

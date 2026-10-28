@@ -58,6 +58,12 @@ jobs:
         run: npm test
 
       - name: End-to-end money flow
+        # The run keeps its private schema and writes its name to a file,
+        # so that the balance check below can audit the very journal the
+        # money flow wrote instead of an empty database.
+        env:
+          E2E_KEEP_SCHEMA: '1'
+          E2E_SCHEMA_FILE: ${{ runner.temp }}/e2e-schema.txt
         run: npm run e2e
 
       - name: Build
@@ -67,4 +73,12 @@ jobs:
         # A script file, not an inline `tsx -e`: the snippet form is
         # evaluated as CommonJS, where a top-level `await` is a syntax
         # error, so the check never actually ran.
+        env:
+          AUDIT_SCHEMA_FILE: ${{ runner.temp }}/e2e-schema.txt
         run: npx tsx apps/api/scripts/audit-ledger.ts
+
+      - name: Drop the private schema the e2e run kept
+        # The schema was kept so that the balance check above could audit
+        # the journal the money flow wrote. Now it is not needed any more.
+        if: always()
+        run: npx tsx apps/api/scripts/drop-schema.ts --file "${{ runner.temp }}/e2e-schema.txt"
