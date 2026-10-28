@@ -78,7 +78,7 @@ export async function createOrder(
   },
 ): Promise<OrderRow> {
   if (!Number.isSafeInteger(args.quantity) || args.quantity <= 0) {
-    throw new OrderError('So luong khong hop le', 'INVALID_QUANTITY');
+    throw new OrderError('Số lượng không hợp lệ', 'INVALID_QUANTITY');
   }
 
   // Lazy sweep: free the tickets of abandoned checkouts before we take the
@@ -109,7 +109,7 @@ export async function createOrder(
     `;
     const listing = listings[0];
     if (!listing) {
-      throw new OrderError('Khong tim thay listing', 'LISTING_NOT_FOUND', 404);
+      throw new OrderError('Không tìm thấy listing', 'LISTING_NOT_FOUND', 404);
     }
 
     // A ticket for an event that already happened can never be released from
@@ -120,7 +120,7 @@ export async function createOrder(
     `;
     if (events[0]?.status === 'completed') {
       throw new OrderError(
-        'Su kien nay da hoan tat, khong ban duoc ve nua',
+        'Sự kiện này đã hoàn tất, không bán được vé nữa',
         'EVENT_COMPLETED',
         409,
       );
@@ -131,7 +131,7 @@ export async function createOrder(
     // escrow would be nonsense.
     if (listing.seller_id === args.buyerId) {
       throw new OrderError(
-        'Ban khong the mua ve cua chinh minh',
+        'Bạn không thể mua vé của chính mình',
         'OWN_LISTING',
         409,
       );
@@ -140,7 +140,7 @@ export async function createOrder(
     const remaining = listing.quantity_total - listing.quantity_sold;
     if (remaining < args.quantity) {
       throw new OrderError(
-        `Chi con ${remaining} ve cho listing nay`,
+        `Chỉ còn ${remaining} vé cho listing này`,
         'INSUFFICIENT_QUANTITY',
         409,
       );
@@ -242,7 +242,7 @@ export async function handleIpn(
     `;
     const order = orders[0];
     if (!order) {
-      throw new OrderError('Khong tim thay don hang', 'ORDER_NOT_FOUND', 404);
+      throw new OrderError('Không tìm thấy đơn hàng', 'ORDER_NOT_FOUND', 404);
     }
 
     const inserted = await tx<{ id: string }[]>`
@@ -259,6 +259,17 @@ export async function handleIpn(
     `;
 
     const isNewNotification = inserted.length > 0;
+
+    // The amount on the notification must match the order we reserved, in
+    // every case. It is checked before anything is written, so a wrong
+    // amount can never move money.
+    if (Number(order.gross_vnd) !== args.amountVnd) {
+      throw new OrderError(
+        `Số tiền không khớp: order ${order.gross_vnd} vs IPN ${args.amountVnd}`,
+        'AMOUNT_MISMATCH',
+        400,
+      );
+    }
 
     if (!args.ok) {
       if (order.status === 'PENDING_PAYMENT') {
@@ -277,19 +288,18 @@ export async function handleIpn(
       return { status: refreshed[0]!.status, applied: isNewNotification, order: refreshed[0]! };
     }
 
-    // The money arrived. The order may still be PENDING_PAYMENT, or it may
-    // already have been marked EXPIRED by the lazy sweep - in that case the
-    // tickets were given back and sold to somebody else, so the buyer has to
-    // be refunded instead of the seller being paid.
+    // The money arrived. From here on the order must end up in a state that
+    // accounts for the money - never in a state where the buyer paid and
+    // nothing was booked.
+    //
+    // Which state depends on whether the order can still be fulfilled:
+    //   PENDING_PAYMENT + reservation valid -> a normal capture
+    //   PENDING_PAYMENT + reservation gone  -> a late payment (refund owed)
+    //   EXPIRED                           -> a late payment (refund owed)
+    //   anything else (FAILED, CANCELLED,
+    //   RELEASED, PAID, REFUND_REQUIRED)  -> the order can no longer be
+    //     fulfilled, so the money is booked as owed to the buyer
     if (order.status === 'PENDING_PAYMENT' || order.status === 'EXPIRED') {
-      if (Number(order.gross_vnd) !== args.amountVnd) {
-        throw new OrderError(
-          `So tien khong khop: order ${order.gross_vnd} vs IPN ${args.amountVnd}`,
-          'AMOUNT_MISMATCH',
-          400,
-        );
-      }
-
       // The reservation had already expired - the tickets were sold to
       // somebody else in the meantime. The seller must not get this money
       // (the buyer no longer has a ticket), but the buyer did pay, so the
@@ -300,10 +310,25 @@ export async function handleIpn(
         new Date(order.expires_at).getTime() < Date.now();
       if (isLate) {
         await ensurePlatformAccounts(tx);
+
+        // The sweep only ever touches PENDING_PAYMENT orders, so a ticket
+        // that was still reserved here would never be given back - the
+        // stock would leak away with every late payment. If the order was
+        // still PENDING_PAYMENT the sweep has not run yet and the tickets
+        // are still ours to return; if it was already EXPIRED the sweep has
+        // returned them and we must not subtract them twice.
+        if (order.status === 'PENDING_PAYMENT') {
+          await tx`
+            UPDATE listings
+            SET quantity_sold = quantity_sold - ${order.quantity}
+            WHERE id = ${order.listing_id}
+          `;
+        }
+
         await postLatePaymentRefund(tx, {
           orderId: order.id,
           amountVnd: Number(order.gross_vnd),
-          memo: `Thanh toan den muon don hang ${order.id}`,
+          memo: `Thanh toán đến muộn đơn hàng ${order.id}`,
         });
         await tx`
           UPDATE orders
@@ -330,7 +355,7 @@ export async function handleIpn(
         grossVnd: Number(order.gross_vnd),
         sellerNetVnd: Number(order.seller_net_vnd),
         platformFeeVnd: Number(order.platform_fee_vnd),
-        memo: `Thanh toan don hang ${order.id}`,
+        memo: `Thanh toán đơn hàng ${order.id}`,
       });
 
       await tx`
@@ -338,6 +363,29 @@ export async function handleIpn(
         SET status = 'PAID', paid_at = now()
         WHERE id = ${args.orderId}
       `;
+    } else if (isNewNotification) {
+      // The order can no longer be fulfilled, but the buyer paid. Booking
+      // nothing would make the money disappear: the gateway cash would not
+      // grow and no liability towards the buyer would exist. The payment is
+      // therefore booked as a refund payable, exactly like a late payment.
+      //
+      // This covers every remaining status:
+      //   FAILED            - the buyer declined and then retried successfully
+      //   CANCELLED         - the event was completed before the notification
+      //   PAID              - the buyer paid twice (a second, real payment)
+      //   RELEASED          - a second payment after the seller was paid out
+      //   REFUND_REQUIRED   - a second payment after a late payment
+      //
+      // In every one of these cases the buyer handed over money that the
+      // order does not account for, so the platform owes it back. The
+      // original payment is untouched: the ledger keeps the first capture
+      // and the second one becomes a liability towards the buyer.
+      await ensurePlatformAccounts(tx);
+      await postLatePaymentRefund(tx, {
+        orderId: order.id,
+        amountVnd: Number(order.gross_vnd),
+        memo: `Thanh toán cho đơn hàng không thể thực hiện ${order.id}`,
+      });
     }
 
     const refreshed = await tx<OrderRow[]>`SELECT * FROM orders WHERE id = ${args.orderId}`;
@@ -403,14 +451,14 @@ export async function releaseEventEscrow(
         `liability:user:${order.seller_id}:pending`,
       );
       if (!pending) {
-        throw new Error(`Khong tim thay tai khoan escrow cua ${order.seller_id}`);
+        throw new Error(`Không tìm thấy tài khoản escrow của ${order.seller_id}`);
       }
 
       await postEscrowRelease(tx, {
         orderId: order.id,
         sellerId: order.seller_id,
         amountVnd: amount,
-        memo: `Giai ngan escrow don hang ${order.id}`,
+        memo: `Giải ngân escrow đơn hàng ${order.id}`,
       });
 
       await tx`

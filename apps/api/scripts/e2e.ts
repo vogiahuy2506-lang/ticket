@@ -237,10 +237,19 @@ export async function runAssertions(): Promise<void> {
   assert(paid.order.status === 'PAID', 'order is PAID after the IPN');
 
   // ------------------------------------------------- idempotent replay x3
+  // The gateway retries a notification it did not get an answer for. The
+  // money must be booked exactly once, and the answer must be `02`
+  // ("already confirmed") so the gateway stops retrying.
   for (let i = 0; i < 3; i++) {
-    await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(payload).toString()}`, {
-      method: 'GET',
-    });
+    const replayRes = await fetch(
+      `${API}/api/ipn/vnpay?${new URLSearchParams(payload).toString()}`,
+      { method: 'GET' },
+    );
+    const replayBody = (await replayRes.json()) as { RspCode: string };
+    assert(
+      replayBody.RspCode === '02',
+      'a replayed IPN is answered with RspCode 02 (already confirmed)',
+    );
   }
   console.log('  ... replayed the same IPN 3 times');
 
@@ -354,6 +363,147 @@ export async function runAssertions(): Promise<void> {
     'a declined payment returns the reserved ticket to the listing',
   );
 
+  // --------------------------------------- a successful retry after a decline
+  // The buyer declined at the gateway and then paid successfully on a retry
+  // (a new transaction number, so the idempotency key does not match).
+  // The order is already FAILED, but the buyer *did* pay this time, so the
+  // money must be booked - as money owed back to the buyer, because the
+  // tickets went back to the listing after the decline.
+  //
+  // Before the fix the notification was accepted (RspCode 00) but nothing
+  // was posted to the ledger: the buyer's money simply disappeared.
+  const retryCheckout = await json<{ orderId: string; grossVnd: number }>('/api/checkout', {
+    method: 'POST',
+    headers: { 'idempotency-key': `e2e-retry-${Date.now()}` },
+    body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+  });
+  const retryDeclinePayload: Record<string, string> = {
+    vnp_Version: '2.1.0',
+    vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_OrderType: 'other',
+    vnp_Amount: String(retryCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
+    vnp_TxnRef: retryCheckout.orderId,
+    vnp_OrderInfo: 'decline then retry',
+    vnp_ReturnUrl: 'http://localhost:3010/orders/x',
+    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
+    vnp_TransactionNo: `E2ERETRYFAIL${Date.now()}`,
+    vnp_BankCode: 'NCB',
+    vnp_ResponseCode: '99',
+    vnp_TransactionStatus: '99',
+    vnp_ResponseMessage: 'Giao dich bi huy',
+  };
+  retryDeclinePayload.vnp_SecureHash = sign(retryDeclinePayload);
+  await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(retryDeclinePayload).toString()}`, {
+    method: 'GET',
+  });
+
+  const refundBefore = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+
+  const retrySuccessPayload: Record<string, string> = {
+    ...retryDeclinePayload,
+    vnp_TransactionNo: `E2ERETRYOK${Date.now()}`,
+    vnp_ResponseCode: '00',
+    vnp_TransactionStatus: '00',
+    vnp_ResponseMessage: 'Giao dich thanh cong',
+  };
+  delete retrySuccessPayload.vnp_SecureHash;
+  retrySuccessPayload.vnp_SecureHash = sign(retrySuccessPayload);
+
+  const retryRes = await fetch(
+    `${API}/api/ipn/vnpay?${new URLSearchParams(retrySuccessPayload).toString()}`,
+    { method: 'GET' },
+  );
+  const retryBody = (await retryRes.json()) as { RspCode: string };
+  assert(retryBody.RspCode === '00', 'a successful retry is accepted');
+
+  const refundAfter = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  assert(
+    refundAfter === refundBefore + retryCheckout.grossVnd,
+    `a successful retry books the money as owed to the buyer (${retryCheckout.grossVnd})`,
+  );
+
+  const retryAudit = await json<{ ok: boolean }>('/api/ledger/audit');
+  assert(retryAudit.ok, 'the ledger is still balanced after the successful retry');
+
+  // ------------------------- a late payment that arrives before the sweep
+  // The same late-payment case, but the lazy sweep has NOT run yet: the
+  // reservation window has passed while the order is still PENDING_PAYMENT.
+  // The sweep only ever touches PENDING_PAYMENT orders, so once the order
+  // becomes REFUND_REQUIRED nobody would ever give the ticket back - the
+  // stock would leak away with every late payment.
+  //
+  // The sweep runs on checkout and on the event/listing reads, so this test
+  // must not call any of those between expiring the order and sending the
+  // notification.
+  const leakCheckout = await json<{ orderId: string; grossVnd: number }>('/api/checkout', {
+    method: 'POST',
+    headers: { 'idempotency-key': `e2e-leak-${Date.now()}` },
+    body: JSON.stringify({ listingId: listing.id, quantity: 1, buyerId: buyer.id }),
+  });
+
+  const soldBeforeLeak = (
+    await sql`
+      SELECT quantity_sold FROM listings WHERE id = ${listing.id}
+    `
+  )[0]!.quantity_sold as unknown as number;
+
+  // Expire the reservation without letting the sweep run.
+  await sql`
+    UPDATE orders SET expires_at = now() - interval '1 minute'
+    WHERE id = ${leakCheckout.orderId}
+  `;
+
+  const leakPayload: Record<string, string> = {
+    vnp_Version: '2.1.0',
+    vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_OrderType: 'other',
+    vnp_Amount: String(leakCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
+    vnp_TxnRef: leakCheckout.orderId,
+    vnp_OrderInfo: 'late payment without sweep',
+    vnp_ReturnUrl: 'http://localhost:3010/orders/x',
+    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
+    vnp_TransactionNo: `E2ELEAK${Date.now()}`,
+    vnp_BankCode: 'NCB',
+    vnp_ResponseCode: '00',
+    vnp_TransactionStatus: '00',
+    vnp_ResponseMessage: 'Giao dich thanh cong',
+  };
+  leakPayload.vnp_SecureHash = sign(leakPayload);
+
+  await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(leakPayload).toString()}`, {
+    method: 'GET',
+  });
+
+  const leakOrder = await json<{ order: { status: string } }>(
+    `/api/orders/${leakCheckout.orderId}`,
+  );
+  assert(
+    leakOrder.order.status === 'REFUND_REQUIRED',
+    'a late payment before the sweep becomes REFUND_REQUIRED',
+  );
+
+  const soldAfterLeak = (
+    await sql`
+      SELECT quantity_sold FROM listings WHERE id = ${listing.id}
+    `
+  )[0]!.quantity_sold as unknown as number;
+  assert(
+    soldAfterLeak === soldBeforeLeak - 1,
+    'a late payment before the sweep returns the reserved ticket to the listing',
+  );
+
   // ----------------------------------------------------- own listing
   // A seller must not be able to buy their own ticket. This runs while the
   // event is still scheduled, so the rejection really is about the listing
@@ -445,6 +595,21 @@ export async function runAssertions(): Promise<void> {
 
   const lateAudit = await json<{ ok: boolean }>('/api/ledger/audit');
   assert(lateAudit.ok, 'the ledger is still balanced after the late payment');
+
+  // The late payment must not leak the reserved ticket. The buyer paid but
+  // the tickets went back to the market, so the listing must show them as
+  // available again. Before the fix the ticket stayed reserved forever: the
+  // sweep only touches PENDING_PAYMENT orders, so a REFUND_REQUIRED order
+  // never gave its ticket back.
+  const soldAfterLate = (
+    await json<{ listings: Array<{ id: string; quantity_sold: number }> }>(
+      `/api/events/${event.id}`,
+    )
+  ).listings.find((l) => l.id === listing.id)?.quantity_sold;
+  assert(
+    soldAfterLate === soldBeforeDecline,
+    'a late payment returns the reserved ticket to the listing',
+  );
 
   // ------------------------------------------------- escrow release
   const released = await json<{ released: number; releasedVnd: number }>(
@@ -554,7 +719,189 @@ export async function runAssertions(): Promise<void> {
     'checkout for a completed event is rejected (409)',
   );
 
-  // ------------------------------------------------- the raw IPN log
+  // ------------------------------ a payment for a cancelled order
+  // The buyer checked out, the event was completed (so the order became
+  // CANCELLED), and only then the gateway notification arrives. The buyer
+  // paid, so the money must be booked - as money owed back to the buyer.
+  //
+  // Before the fix the notification was accepted but nothing was posted:
+  // the money disappeared.
+  const cancelEvent = await sql<{ id: string }[]>`
+    INSERT INTO events (name, venue, starts_at)
+    VALUES ('E2E cancelled event ' || now()::text, 'E2E venue', now() + interval '30 days')
+    RETURNING id
+  `;
+  const cancelListing = await sql<{ id: string }[]>`
+    INSERT INTO listings (event_id, seller_id, title, quantity_total, price_vnd)
+    VALUES (${cancelEvent[0]!.id}, ${seller.id}, 'E2E cancelled listing', 10, 1200000)
+    RETURNING id
+  `;
+
+  const cancelledCheckout = await json<{ orderId: string; grossVnd: number }>(
+    '/api/checkout',
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': `e2e-cancelled-${Date.now()}` },
+      body: JSON.stringify({
+        listingId: cancelListing[0]!.id,
+        quantity: 1,
+        buyerId: buyer.id,
+      }),
+    },
+  );
+
+  // Completing the event cancels the unpaid order.
+  await json(`/api/events/${cancelEvent[0]!.id}/complete`, { method: 'POST' });
+  const cancelledStatus = await json<{ order: { status: string } }>(
+    `/api/orders/${cancelledCheckout.orderId}`,
+  );
+  assert(
+    cancelledStatus.order.status === 'CANCELLED',
+    'completing the event cancels the unpaid order',
+  );
+
+  const refundBeforeCancelled = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+
+  const cancelledPayload: Record<string, string> = {
+    vnp_Version: '2.1.0',
+    vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_OrderType: 'other',
+    vnp_Amount: String(cancelledCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
+    vnp_TxnRef: cancelledCheckout.orderId,
+    vnp_OrderInfo: 'payment after the event was completed',
+    vnp_ReturnUrl: 'http://localhost:3010/orders/x',
+    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
+    vnp_TransactionNo: `E2ECANCELLED${Date.now()}`,
+    vnp_BankCode: 'NCB',
+    vnp_ResponseCode: '00',
+    vnp_TransactionStatus: '00',
+    vnp_ResponseMessage: 'Giao dich thanh cong',
+  };
+  cancelledPayload.vnp_SecureHash = sign(cancelledPayload);
+
+  await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(cancelledPayload).toString()}`, {
+    method: 'GET',
+  });
+
+  const refundAfterCancelled = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+  assert(
+    refundAfterCancelled === refundBeforeCancelled + cancelledCheckout.grossVnd,
+    'a payment for a cancelled order is booked as money owed to the buyer',
+  );
+
+  const cancelledAudit = await json<{ ok: boolean }>('/api/ledger/audit');
+  assert(cancelledAudit.ok, 'the ledger is still balanced after the cancelled-order payment');
+
+  // ------------------------------------- a second payment for the same order
+  // The buyer pays once, and then pays a *second* time - a retry at the
+  // gateway that produced a new transaction number. The second payment is
+  // real money that arrived, so it has to be booked: the seller must not
+  // get it twice, and the buyer is owed it back.
+  //
+  // Before the fix the second notification was accepted but nothing was
+  // posted - 1.100.000 VND simply disappeared.
+  const doublePayEvent = await sql<{ id: string }[]>`
+    INSERT INTO events (name, venue, starts_at)
+    VALUES ('E2E double pay event ' || now()::text, 'E2E venue', now() + interval '30 days')
+    RETURNING id
+  `;
+  const doublePayListing = await sql<{ id: string }[]>`
+    INSERT INTO listings (event_id, seller_id, title, quantity_total, price_vnd)
+    VALUES (${doublePayEvent[0]!.id}, ${seller.id}, 'E2E double pay listing', 10, 1200000)
+    RETURNING id
+  `;
+  const doublePayCheckout = await json<{ orderId: string; grossVnd: number }>(
+    '/api/checkout',
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': `e2e-double-pay-${Date.now()}` },
+      body: JSON.stringify({
+        listingId: doublePayListing[0]!.id,
+        quantity: 1,
+        buyerId: buyer.id,
+      }),
+    },
+  );
+  // Pay it once, so the order reaches PAID.
+  const doublePayFirst: Record<string, string> = {
+    vnp_Version: '2.1.0',
+    vnp_Command: 'pay',
+    vnp_TmnCode: 'MOCKMERCHANT',
+    vnp_OrderType: 'other',
+    vnp_Amount: String(doublePayCheckout.grossVnd * WIRE_AMOUNT_FACTOR),
+    vnp_CurrCode: 'VND',
+    vnp_TxnRef: doublePayCheckout.orderId,
+    vnp_OrderInfo: 'the first of two payments',
+    vnp_ReturnUrl: 'http://localhost:3010/orders/x',
+    vnp_NotifyUrl: `${API}/api/ipn/vnpay`,
+    vnp_TransactionNo: `E2EDOUBLEFIRST${Date.now()}`,
+    vnp_BankCode: 'NCB',
+    vnp_ResponseCode: '00',
+    vnp_TransactionStatus: '00',
+    vnp_ResponseMessage: 'Giao dich thanh cong',
+  };
+  doublePayFirst.vnp_SecureHash = sign(doublePayFirst);
+  await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(doublePayFirst).toString()}`, {
+    method: 'GET',
+  });
+
+  const cashBeforeDouble = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'asset:gateway_cash')?.balanceVnd ?? 0;
+  const refundBeforeDouble = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+
+  // The second payment, with a different transaction number.
+  const doublePaySecond: Record<string, string> = {
+    ...doublePayFirst,
+    vnp_TransactionNo: `E2EDOUBLESECOND${Date.now()}`,
+    vnp_OrderInfo: 'the second of two payments',
+  };
+  delete doublePaySecond.vnp_SecureHash;
+  doublePaySecond.vnp_SecureHash = sign(doublePaySecond);
+  await fetch(`${API}/api/ipn/vnpay?${new URLSearchParams(doublePaySecond).toString()}`, {
+    method: 'GET',
+  });
+
+  const cashAfterDouble = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'asset:gateway_cash')?.balanceVnd ?? 0;
+  const refundAfterDouble = (
+    await json<{ balances: Array<{ accountCode: string; balanceVnd: number }> }>(
+      '/api/ledger/balances',
+    )
+  ).balances.find((b) => b.accountCode === 'liability:refund_payable')?.balanceVnd ?? 0;
+
+  assert(
+    cashAfterDouble === cashBeforeDouble + doublePayCheckout.grossVnd,
+    'a second payment for the same order reaches the gateway cash',
+  );
+  assert(
+    refundAfterDouble === refundBeforeDouble + doublePayCheckout.grossVnd,
+    'a second payment for the same order is booked as money owed to the buyer',
+  );
+
+  const doubleAudit = await json<{ ok: boolean }>('/api/ledger/audit');
+  assert(doubleAudit.ok, 'the ledger is still balanced after the second payment');
+
+  // --------------------------------------------------- the raw IPN log
   // Every notification is logged, including the ones we rejected, so an
   // operator can reconcile against the gateway's own transaction list.
   const { events: rawEvents } = await json<{

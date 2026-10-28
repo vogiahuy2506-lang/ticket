@@ -116,6 +116,7 @@ export const api = {
       transactions: Array<{
         txnId: string;
         refType: string;
+        refId: string | null;
         memo: string;
         createdAt: string;
         lines: Array<{

@@ -23,6 +23,12 @@ import { buildServer } from '../src/server.js';
 import { getSql } from '../src/db/client.js';
 import { migrate } from '../src/db/migrate.js';
 import { seed } from '../src/db/seed.js';
+import {
+  createIsolatedDb,
+  deleteE2eRows,
+  useIsolatedDb,
+  type IsolatedDb,
+} from '../src/db/isolated.js';
 
 /**
  * Creates a throwaway event with one listing, so the assertions never depend
@@ -76,6 +82,10 @@ async function main(): Promise<void> {
     console.log(`[e2e] using the running stack at ${base}`);
     const { runAssertions } = await import('./e2e.js');
     await runAssertions();
+    // The run wrote into the real database, so the rows it created are
+    // removed again. The demo data (the seeded events) is untouched.
+    const removed = await deleteE2eRows(getSql());
+    console.log(`[e2e] cleaned up ${removed} row(s) of test data`);
     console.log('\n[e2e] done.');
     return;
   }
@@ -91,26 +101,38 @@ async function main(): Promise<void> {
   process.env.MOCK_GATEWAY = process.env.MOCK_GATEWAY ?? 'true';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'error';
 
-  // A fresh clone has no schema and no seed users yet, so the runner brings
-  // the database up to date itself. Both steps are idempotent.
-  await migrate();
-  await seed();
-
-  const fixture = await provisionFixture();
-  const app = await buildServer();
-
+  // The run happens in a private schema, so it never touches the
+  // developer's database. Without this the e2e run would leave a trail of
+  // "E2E event ..." rows in the demo data, and the storefront would fill
+  // up with events nobody booked.
+  let isolated: IsolatedDb | null = null;
   try {
-    await app.listen({ port, host: '127.0.0.1' });
-    await waitForServer(base);
-    console.log(`[e2e] API is up on ${base}`);
+    isolated = await createIsolatedDb('e2e');
+    useIsolatedDb(isolated.sql);
 
-    const { runAssertions, setApiBase, setFixture } = await import('./e2e.js');
-    setApiBase(base);
-    setFixture(fixture);
-    await runAssertions();
-    console.log('\n[e2e] done.');
+    // A fresh clone has no schema and no seed users yet, so the runner
+    // brings the database up to date itself. Both steps are idempotent.
+    await migrate();
+    await seed();
+
+    const fixture = await provisionFixture();
+    const app = await buildServer();
+
+    try {
+      await app.listen({ port, host: '127.0.0.1' });
+      await waitForServer(base);
+      console.log(`[e2e] API is up on ${base}`);
+
+      const { runAssertions, setApiBase, setFixture } = await import('./e2e.js');
+      setApiBase(base);
+      setFixture(fixture);
+      await runAssertions();
+      console.log('\n[e2e] done.');
+    } finally {
+      await app.close();
+    }
   } finally {
-    await app.close();
+    await isolated?.drop();
   }
 }
 

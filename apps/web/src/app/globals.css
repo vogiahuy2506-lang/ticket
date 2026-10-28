@@ -49,13 +49,23 @@ body {
 }
 
 .card-interactive {
-  @apply transition duration-200 hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-card-hover;
+  @apply transition duration-200 hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-card-hover focus-within:border-ink-300;
 }
 
 /* ---------------------------------------------------------------- buttons */
 
+/*
+ * The width is deliberately *not* set here.
+ *
+ * A `width: 100%` baked into these classes wins over every Tailwind
+ * utility class, because the generated stylesheet puts the component
+ * layer after the utilities. A `w-24` on the element would then be
+ * ignored, the element would take the whole row, and whatever sits next
+ * to it would be squeezed into a sliver. The sizing belongs to the
+ * element, so it is left to the markup.
+ */
 .btn-primary {
-  @apply inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-3 text-base font-semibold text-white shadow-sm transition duration-200 hover:bg-brand-700 hover:shadow-md active:scale-[0.985] disabled:cursor-not-allowed disabled:bg-ink-300 disabled:shadow-none;
+  @apply inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-3 text-base font-semibold text-white shadow-sm transition duration-200 hover:bg-brand-700 hover:shadow-md active:scale-[0.985] disabled:cursor-not-allowed disabled:bg-ink-300 disabled:shadow-none;
 }
 
 .btn-secondary {
@@ -72,8 +82,13 @@ body {
 
 /* ----------------------------------------------------------------- inputs */
 
+/*
+ * The width is deliberately not set here either - see the note above
+ * `.btn-primary`. A baked-in `width: 100%` would beat a `w-24` on the
+ * element and stretch the field across the whole row.
+ */
 .input {
-  @apply w-full rounded-xl border border-ink-300 bg-white px-3 py-2 text-base text-ink-900 outline-none transition placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-100 disabled:bg-ink-100 disabled:text-ink-500;
+  @apply rounded-xl border border-ink-300 bg-white px-3 py-2 text-base text-ink-900 outline-none transition placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-100 disabled:bg-ink-100 disabled:text-ink-500;
 }
 
 /* ------------------------------------------------------------------ misc */

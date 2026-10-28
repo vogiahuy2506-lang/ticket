@@ -39,13 +39,17 @@ export interface AccountRow {
 }
 
 export async function ensurePlatformAccounts(sql: Db): Promise<void> {
+  // DO UPDATE (not DO NOTHING): an account that already exists from an older
+  // version of the app keeps its old, unaccented name forever otherwise,
+  // because the row is never rewritten. The chart of accounts is reference
+  // data, so refreshing the label on every boot is safe and idempotent.
   await sql`
     INSERT INTO ledger_accounts (code, kind, name)
     VALUES
-      (${ACCOUNT_CODES.gatewayCash}, 'asset', 'Tien tai cong thanh toan'),
-      (${ACCOUNT_CODES.platformFee}, 'revenue', 'Phi dich vu cua san'),
-      (${ACCOUNT_CODES.refundPayable}, 'liability', 'Tien phai hoan cho nguoi mua')
-    ON CONFLICT (code) DO NOTHING
+      (${ACCOUNT_CODES.gatewayCash}, 'asset', 'Tiền tại cổng thanh toán'),
+      (${ACCOUNT_CODES.platformFee}, 'revenue', 'Phí dịch vụ của sàn'),
+      (${ACCOUNT_CODES.refundPayable}, 'liability', 'Tiền phải hoàn cho người mua')
+    ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
   `;
 }
 
@@ -53,9 +57,9 @@ export async function ensureUserAccounts(sql: Db, userId: string, userName: stri
   await sql`
     INSERT INTO ledger_accounts (code, kind, owner_user_id, name)
     VALUES
-      (${pendingAccountCode(userId)}, 'liability', ${userId}, ${`Tien cho giai ngan - ${userName}`}),
-      (${availableAccountCode(userId)}, 'liability', ${userId}, ${`Tien kha dung - ${userName}`})
-    ON CONFLICT (code) DO NOTHING
+      (${pendingAccountCode(userId)}, 'liability', ${userId}, ${`Tiền chờ giải ngân - ${userName}`}),
+      (${availableAccountCode(userId)}, 'liability', ${userId}, ${`Tiền khả dụng - ${userName}`})
+    ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
   `;
 }
 

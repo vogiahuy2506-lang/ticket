@@ -13,12 +13,15 @@
   "scripts": {
     "build:shared": "npm run build -w @tce/shared",
     "build": "npm run build:shared && npm run build -w @tce/api && npm run build -w @tce/web",
-    "test": "npm run test -w @tce/shared && npm run test -w @tce/api",
+    "test": "npm run build:shared && npm run test -w @tce/shared && npm run test -w @tce/api",
+    "test:unit": "npm run test -w @tce/shared",
+    "test:api": "npm run build:shared && npm run test -w @tce/api",
     "e2e": "npm run build:shared && npm run e2e -w @tce/api",
     "db:init": "npm run db:init -w @tce/api",
     "db:reset": "npm run db:reset -w @tce/api",
     "dev": "npm run build:shared && concurrently -n api,web -c cyan,magenta \"npm run dev -w @tce/api\" \"npm run dev -w @tce/web\"",
-    "typecheck": "npm run typecheck -w @tce/api && npm run typecheck -w @tce/web"
+    "typecheck": "npm run typecheck -w @tce/api && npm run typecheck -w @tce/web",
+    "verify": "npm run typecheck && npm run test && npm run e2e && npm run build"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

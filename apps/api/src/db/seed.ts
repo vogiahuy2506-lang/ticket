@@ -1,5 +1,6 @@
 import { getSql } from './client.js';
 import { ensurePlatformAccounts, ensureUserAccounts } from './accounts.js';
+import { fixLegacyAccountNames, fixLegacyUserNames } from './legacy-text.js';
 
 /**
  * Idempotent seed.
@@ -14,14 +15,19 @@ const SELLER_SLUGS = ['seller-minh', 'seller-huy'];
 export async function seed(): Promise<void> {
   const sql = getSql();
 
+  // An existing database may still hold the old, unaccented names. Fix them
+  // before the seeded users are looked up by name below.
+  await fixLegacyUserNames(sql);
+  await fixLegacyAccountNames(sql);
+
   const users = await sql<{ id: string; name: string }[]>`
     INSERT INTO users (name, role)
     VALUES
-      ('Nguyen Lan (nguoi mua)', 'buyer'),
-      ('Pham Dung (nguoi mua)', 'buyer'),
-      ('Tran Minh (nguoi ban)', 'seller'),
-      ('Le Huy (nguoi ban)', 'seller'),
-      ('Vo Chi (nguoi ban)', 'seller'),
+      ('Nguyễn Lan (người mua)', 'buyer'),
+      ('Phạm Dung (người mua)', 'buyer'),
+      ('Trần Minh (người bán)', 'seller'),
+      ('Lê Huy (người bán)', 'seller'),
+      ('Võ Chị (người bán)', 'seller'),
       ('Ops Admin', 'admin')
     ON CONFLICT DO NOTHING
     RETURNING id, name
@@ -35,10 +41,10 @@ export async function seed(): Promise<void> {
   const byName = new Map(allUsers.map((u) => [u.name, u]));
   void users;
 
-  const buyer = byName.get('Nguyen Lan (nguoi mua)');
-  const seller1 = byName.get('Tran Minh (nguoi ban)');
-  const seller2 = byName.get('Le Huy (nguoi ban)');
-  const seller3 = byName.get('Vo Chi (nguoi ban)');
+  const buyer = byName.get('Nguyễn Lan (người mua)');
+  const seller1 = byName.get('Trần Minh (người bán)');
+  const seller2 = byName.get('Lê Huy (người bán)');
+  const seller3 = byName.get('Võ Chị (người bán)');
   const admin = byName.get('Ops Admin');
 
   if (!buyer || !seller1 || !seller2 || !seller3 || !admin) {
@@ -59,8 +65,8 @@ export async function seed(): Promise<void> {
   const events = await sql<{ id: string; name: string }[]>`
     INSERT INTO events (name, venue, starts_at)
     VALUES
-      ('Dai nhac Son Tra - Dem Mua', 'San Van Hoa TP.HCM', now() + interval '30 days'),
-      ('Hoi thao Ky nam 2026', 'Nha thi dau My Dinh', now() + interval '60 days')
+      ('Đại nhạc Sơn Trà - Đêm Mưa', 'Sân Văn Hoá TP.HCM', now() + interval '30 days'),
+      ('Hội thảo Kỷ nam 2026', 'Nhà thi đấu Mỹ Đình', now() + interval '60 days')
     RETURNING id, name
   `;
   const [concert, conference] = events;
@@ -75,12 +81,12 @@ export async function seed(): Promise<void> {
   await sql`
     INSERT INTO listings (event_id, seller_id, title, quantity_total, price_vnd)
     VALUES
-      (${concert!.id}, ${seller1.id}, 'Vé VIP - khu vuc A', 6, 1500000),
-      (${concert!.id}, ${seller1.id}, 'Vé Standard - khu vuc B', 4, 900000),
-      (${concert!.id}, ${seller2.id}, 'Vé vé vòng 2', 5, 1200000),
-      (${concert!.id}, ${seller3.id}, 'Vé gia re - khu vuc C', 3, 800000),
-      (${conference!.id}, ${seller2.id}, 'Vé phim khu vuc B', 4, 750000),
-      (${conference!.id}, ${seller3.id}, 'Vé goc - gia le (test lam tron)', 3, 333333)
+      (${concert!.id}, ${seller1.id}, 'Vé VIP - khu vực A', 6, 1500000),
+      (${concert!.id}, ${seller1.id}, 'Vé Standard - khu vực B', 4, 900000),
+      (${concert!.id}, ${seller2.id}, 'Vé vòng 2', 5, 1200000),
+      (${concert!.id}, ${seller3.id}, 'Vé giá rẻ - khu vực C', 3, 800000),
+      (${conference!.id}, ${seller2.id}, 'Vé phim khu vực B', 4, 750000),
+      (${conference!.id}, ${seller3.id}, 'Vé góc - giá lẻ (test làm tròn)', 3, 333333)
   `;
 
   console.log('[seed] users, events, listings created');

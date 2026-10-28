@@ -1,8 +1,7 @@
 import { notFound } from 'next/navigation';
 import { api } from '@/lib/api';
-import { formatVnd } from '@tce/shared';
-import { startCheckout } from '@/app/actions';
 import { Badge, EmptyState, PageHeader } from '@/components/ui';
+import { ListingCheckoutForm } from '@/components/ListingCheckoutForm';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,125 +42,50 @@ export default async function EventPage({
         }
         action={
           <Badge tone={event.status === 'completed' ? 'success' : 'warning'}>
-            {event.status === 'completed' ? 'Da hoan tat' : 'Sap dien ra'}
+            {event.status === 'completed' ? 'Đã hoàn tất' : 'Sắp diễn ra'}
           </Badge>
         }
       />
 
       {listings.length === 0 ? (
         <EmptyState
-          title="Chua co listing nao"
-          hint="Su kien nay chua co ticket nao duoc dang len ban."
+          title="Chưa có listing nào"
+          hint="Sự kiện này chưa có vé nào được đăng lên bán."
         />
       ) : null}
 
+      {/*
+        An event that has already happened can never release its escrow,
+        so the API refuses the checkout. The button is disabled here as
+        well: sending the buyer to a page that only says "Sự kiện này đã
+        hoàn tất" is a worse experience than saying it right where they
+        click.
+      */}
+      {event.status === 'completed' ? (
+        <div className="rounded-2xl border border-ink-200 bg-ink-50/70 p-4 text-sm text-ink-600">
+          Sự kiện này đã hoàn tất nên không còn vé nào được bán.
+        </div>
+      ) : null}
+
       <div className="space-y-3">
-        {listings.map((listing) => {
-          const available = Number(listing.quantity_available);
-          const price = Number(listing.price_vnd);
-          const buyerFee = Math.round((price * 10) / 100);
-          const sellerFee = Math.round((price * 5) / 100);
-          const soldOut = available <= 0;
-          const lowStock = !soldOut && available <= 3;
-
-          return (
-            <form
-              key={listing.id}
-              action={startCheckout}
-              className="card card-interactive space-y-3.5"
-            >
-              <input type="hidden" name="listingId" value={listing.id} />
-              {/* Stable per-render key: two submits of this form carry the
-                  same Idempotency-Key, so a double-tap cannot reserve the
-                  tickets twice. */}
-              <input
-                type="hidden"
-                name="idempotencyKey"
-                value={`${listing.id}-${listing.quantity_sold}-${crypto.randomUUID()}`}
-              />
-
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="font-semibold leading-snug text-ink-900">
-                    {listing.title}
-                  </p>
-                  <p className="mt-0.5 text-sm text-ink-500">
-                    Nguoi ban: {listing.seller_name}
-                  </p>
-                </div>
-                <div className="shrink-0 text-right">
-                  <p className="table-num text-lg font-bold leading-tight text-brand-700">
-                    {formatVnd(price)}
-                  </p>
-                  <p className="text-xs text-ink-400">/ ve</p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {soldOut ? (
-                  <Badge tone="danger">Het ve</Badge>
-                ) : lowStock ? (
-                  <Badge tone="warning">Chi con {available} ve</Badge>
-                ) : (
-                  <Badge tone="success">Con {available} ve</Badge>
-                )}
-                <span className="text-xs text-ink-400">
-                  da ban {listing.quantity_sold}/{listing.quantity_total}
-                </span>
-              </div>
-
-              <dl className="grid grid-cols-2 gap-2 rounded-xl bg-ink-50/80 p-3 text-xs">
-                <div>
-                  <dt className="text-ink-400">Phi dich vu ban tra</dt>
-                  <dd className="mt-0.5 table-num font-semibold text-ink-800">
-                    +{formatVnd(buyerFee)}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-ink-400">Nguoi ban nhan</dt>
-                  <dd className="mt-0.5 table-num font-semibold text-ink-800">
-                    {formatVnd(price - sellerFee)}
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="flex items-center gap-2">
-                <label className="sr-only" htmlFor={`qty-${listing.id}`}>
-                  So luong
-                </label>
-                <input
-                  id={`qty-${listing.id}`}
-                  type="number"
-                  name="quantity"
-                  min={1}
-                  max={Math.max(1, available)}
-                  defaultValue={1}
-                  inputMode="numeric"
-                  disabled={soldOut}
-                  className="input w-24 shrink-0"
-                />
-                <button
-                  type="submit"
-                  disabled={soldOut}
-                  className="btn-primary flex-1"
-                >
-                  {soldOut ? 'Het ve' : 'Thanh toan'}
-                </button>
-              </div>
-
-              <p className="text-[11px] leading-relaxed text-ink-400">
-                Ban giu phan chenh lech {formatVnd(buyerFee + sellerFee)}/ve trong
-                escrow den khi su kien dien ra. Ve duoc giu 15 phut - het thoi gian
-                thi ve duoc tra lai cho nguoi ban.
-              </p>
-            </form>
-          );
-        })}
+        {listings.map((listing) => (
+          <ListingCheckoutForm
+            key={listing.id}
+            listingId={listing.id}
+            title={listing.title}
+            sellerName={listing.seller_name}
+            priceVnd={Number(listing.price_vnd)}
+            available={Number(listing.quantity_available)}
+            quantitySold={listing.quantity_sold}
+            quantityTotal={listing.quantity_total}
+            closed={event.status === 'completed'}
+          />
+        ))}
       </div>
 
       {listings.length > 0 ? (
         <p className="text-center text-xs text-ink-400">
-          Tong con {totalLeft} ve trong {listings.length} listing.
+          Tổng còn {totalLeft} vé trong {listings.length} listing.
         </p>
       ) : null}
     </div>

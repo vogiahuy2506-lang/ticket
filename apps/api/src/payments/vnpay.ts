@@ -124,6 +124,13 @@ export class VnPayProvider implements PaymentProvider {
       vnp_OrderType: 'other',
       vnp_Locale: 'vn',
       vnp_ReturnUrl: input.returnUrl,
+      // The IPN callback address. VNPay reads this parameter to know
+      // where to send the server-to-server notification, so it is not
+      // optional: without it the gateway has no way to reach us and the
+      // payment is never settled. (The mock provider sends the same
+      // parameter, which is why the mock would have caught a missing one
+      // if the two implementations were checked against each other.)
+      vnp_NotifyUrl: input.notifyUrl,
       vnp_IpAddr: input.clientIp,
       vnp_CreateDate: formatVnTime(now),
       vnp_ExpireDate: formatVnTime(expire),
@@ -155,7 +162,7 @@ export class VnPayProvider implements PaymentProvider {
         signatureValid: false,
         ok: false,
         code: '97',
-        message: 'Chu ky IPN khong hop le',
+        message: 'Chữ ký IPN không hợp lệ',
         raw: payload,
       };
     }

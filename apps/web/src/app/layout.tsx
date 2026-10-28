@@ -5,9 +5,9 @@ import { switchUser } from '@/app/actions';
 import Link from 'next/link';
 
 export const metadata: Metadata = {
-  title: 'VeX - Cho ve su kien',
+  title: 'VeX - Chợ vé sự kiện',
   description:
-    'Marketplace ve su kien: thanh toan qua VNPay, escrow va so ke doi entry.',
+    'Marketplace vé sự kiện: thanh toán qua VNPay, escrow và sổ kế toán entry.',
 };
 
 export const viewport: Viewport = {
@@ -17,13 +17,13 @@ export const viewport: Viewport = {
 };
 
 const NAV = [
-  { href: '/', label: 'Su kien' },
-  { href: '/wallet', label: 'Vi cua toi' },
-  { href: '/ledger', label: 'So cai' },
+  { href: '/', label: 'Sự kiện' },
+  { href: '/wallet', label: 'Ví của tôi' },
+  { href: '/ledger', label: 'Sổ cái' },
 ];
 
 /** Only shown to an operator. */
-const ADMIN_NAV = { href: '/admin', label: 'Quan tri' };
+const ADMIN_NAV = { href: '/admin', label: 'Quản trị' };
 
 export default async function RootLayout({
   children,
@@ -36,7 +36,7 @@ export default async function RootLayout({
     <html lang="vi">
       <body>
         <a href="#main" className="skip-link">
-          Bo qua dieu huong
+          Bỏ qua điều hướng
         </a>
 
         <header className="sticky top-0 z-30 border-b border-ink-200/70 bg-white/85 backdrop-blur-md">
@@ -50,14 +50,14 @@ export default async function RootLayout({
                   VeX
                 </span>
                 <span className="mt-0.5 hidden text-[10px] uppercase tracking-wider text-ink-400 sm:block">
-                  ve su kien
+                  vé sự kiện
                 </span>
               </span>
             </Link>
 
             <form action={switchUser} className="flex items-center gap-1.5">
               <label className="sr-only" htmlFor="userId">
-                Doi nguoi dung
+                Đổi người dùng
               </label>
               <select
                 id="userId"
@@ -75,7 +75,7 @@ export default async function RootLayout({
                 type="submit"
                 className="rounded-lg bg-ink-900 px-2.5 py-1.5 text-sm font-medium text-white transition hover:bg-ink-800 active:scale-95"
               >
-                Doi
+                Đổi
               </button>
             </form>
           </div>
@@ -110,8 +110,8 @@ export default async function RootLayout({
         <footer className="border-t border-ink-200/70 bg-white/60">
           <div className="mx-auto w-full max-w-5xl px-4 py-6 text-xs leading-relaxed text-ink-400">
             <p>
-              VeX - ban cat nhip giao dich ve su kien. Moi dong tien deu duoc ghi
-              vao so ke doi entry; khong co so du nao duoc luu rieng.
+              VeX - bạn cắt nhịp giao dịch vé sự kiện. Mọi dòng tiền đều được ghi
+              vào sổ kế toán entry; không có số dư nào được lưu riêng.
             </p>
           </div>
         </footer>

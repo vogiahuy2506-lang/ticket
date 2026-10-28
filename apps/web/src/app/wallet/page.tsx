@@ -1,6 +1,6 @@
 import { api } from '@/lib/api';
 import { getCurrentUser } from '@/lib/session';
-import { formatVnd } from '@tce/shared';
+import { formatVnd, ledgerEntryTitle } from '@tce/shared';
 import { Badge, EmptyState, MoneyRow, PageHeader, SectionTitle } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
@@ -9,7 +9,7 @@ export default async function WalletPage() {
   const user = await getCurrentUser();
   if (!user) {
     return (
-      <EmptyState title="Chua co nguoi dung" hint="Chon mot nguoi dung o thanh tren de xem vi." />
+      <EmptyState title="Chưa có người dùng" hint="Chọn một người dùng ở thanh trên để xem ví." />
     );
   }
 
@@ -18,51 +18,51 @@ export default async function WalletPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title={`Vi cua ${user.name}`}
-        subtitle="So du duoc tinh truc tiep tu so ke doi entry - khong co cot so du rieng."
+        title={`Ví của ${user.name}`}
+        subtitle="Số dư được tính trực tiếp từ sổ kế toán entry - không có cột số dư riêng."
         action={<Badge tone="brand">{user.role}</Badge>}
       />
 
       <div className="grid grid-cols-2 gap-3">
         <div className="card">
           <p className="text-[11px] font-medium uppercase tracking-wider text-ink-400">
-            Cho giai ngan
+            Chờ giải ngân
           </p>
           <p className="mt-1.5 text-lg font-bold table-num text-amber-700">
             {formatVnd(balances.pendingVnd)}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-ink-400">
-            Tien ban giu cho den khi su kien dien ra
+            Tiền bạn giữ cho đến khi sự kiện diễn ra
           </p>
         </div>
         <div className="card">
           <p className="text-[11px] font-medium uppercase tracking-wider text-ink-400">
-            Khai dung
+            Khả dụng
           </p>
           <p className="mt-1.5 text-lg font-bold table-num text-emerald-700">
             {formatVnd(balances.availableVnd)}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-ink-400">
-            Da giai ngan, co the rut
+            Đã giải ngân, có thể rút
           </p>
         </div>
       </div>
 
       <section className="card space-y-1">
-        <SectionTitle title="Tong cong" />
+        <SectionTitle title="Tổng cộng" />
         <MoneyRow
-          label="Tong cua ban"
+          label="Tổng của bạn"
           value={formatVnd(balances.totalVnd)}
           strong
         />
         <div className="border-t border-ink-100 pt-1">
           <MoneyRow
-            label="Tien tai cong thanh toan"
+            label="Tiền tại cổng thanh toán"
             value={formatVnd(balances.gatewayCashVnd)}
             tone="muted"
           />
           <MoneyRow
-            label="Doanh thu phi cua san"
+            label="Doanh thu phí của sàn"
             value={formatVnd(balances.platformFeeVnd)}
             tone="muted"
           />
@@ -71,14 +71,14 @@ export default async function WalletPage() {
 
       <section className="space-y-3">
         <SectionTitle
-          title="Lich su giao dich"
-          hint={`${transactions.length} giao dich`}
+          title="Lịch sử giao dịch"
+          hint={`${transactions.length} giao dịch`}
         />
 
         {transactions.length === 0 ? (
           <EmptyState
-            title="Chua co giao dich nao"
-            hint="Mua mot ve o trang Su kien de xem cac dong tien di vao vi nay."
+            title="Chưa có giao dịch nào"
+            hint="Mua một vé ở trang Sự kiện để xem các dòng tiền đi vào ví này."
           />
         ) : null}
 
@@ -90,7 +90,7 @@ export default async function WalletPage() {
             >
               <div className="flex items-start justify-between gap-2 border-b border-ink-100 bg-ink-50/60 px-4 py-2.5">
                 <p className="min-w-0 text-sm font-medium text-ink-900">
-                  {txn.memo}
+                  {ledgerEntryTitle(txn.refType, txn.refId)}
                 </p>
                 <span className="shrink-0 text-[11px] text-ink-400">
                   {new Date(txn.createdAt).toLocaleString('vi-VN', {
@@ -113,7 +113,7 @@ export default async function WalletPage() {
                             : 'bg-emerald-50 text-emerald-700'
                         }`}
                       >
-                        {line.direction === 'debit' ? 'No' : 'Co'}
+                        {line.direction === 'debit' ? 'Nợ' : 'Có'}
                       </span>
                       <span className="truncate text-xs text-ink-600">
                         {line.accountName}

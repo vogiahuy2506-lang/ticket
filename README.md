@@ -37,9 +37,11 @@ database comes up with:
 
 | Role | Name |
 | --- | --- |
-| buyer | Nguyen Lan (nguoi mua) |
-| seller | Tran Minh (nguoi ban) |
-| seller | Le Huy (nguoi ban) |
+| buyer | Nguyễn Lan (người mua) |
+| buyer | Phạm Dung (người mua) |
+| seller | Trần Minh (người bán) |
+| seller | Lê Huy (người bán) |
+| seller | Võ Chị (người bán) |
 | admin | Ops Admin |
 
 Two events, six listings across the two sellers (one of them deliberately
@@ -58,8 +60,11 @@ npm run e2e
 | --- | --- |
 | `docker compose logs -f api` | tail the API logs |
 | `docker compose exec api npm run db:reset -w @tce/api` | wipe and re-seed the database |
-| `npm test` | unit tests (fees + ledger) |
+| `npm test` | unit tests + integration tests (needs a database) |
+| `npm run test:unit` | unit tests only (no database) |
+| `npm run test:api` | integration tests only (needs a database) |
 | `npm run e2e` | end-to-end money flow (boots its own API) |
+| `npm run verify` | typecheck + test + e2e + build, the same as CI |
 
 > `npm run e2e` **starts the API itself**, applies the migrations, seeds the
 > users, provisions a throwaway event and runs the whole money flow against
@@ -67,6 +72,14 @@ npm run e2e
 > repo and run it with one command. It is repeatable: each run creates its
 > own fixture and asserts *deltas*, so running it twice in a row passes both
 > times.
+>
+> The run happens in a **private Postgres schema** that is dropped again
+> afterwards, exactly like the integration tests do. So the demo data is
+> never polluted by a test run - the storefront keeps showing only the
+> seeded events, and the reviewer never has to reset the database by hand.
+> (`E2E_EXTERNAL=1` runs against an already-running stack instead; that mode
+> has no private schema to drop, so it deletes the rows it created at the
+> end of the run.)
 >
 > On a fresh clone, start only the database first:
 >
@@ -212,6 +225,7 @@ verifies:
 | `vnp_Amount` | the VND amount **multiplied by 100** (10,000 VND is sent as `1000000`). The IPN returns the same multiplied value, so it is divided by 100 before it is compared to the order. |
 | `vnp_SecureHash` | `HMAC-SHA512(secretKey, hashData)`, lowercase hex, 128 characters. `hashData` is the alphabetically sorted (`ksort`) list of the non-empty parameters, URL-encoded, joined with `&`. The hash fields are excluded. |
 | `vnp_CreateDate`, `vnp_ExpireDate` | `yyyyMMddHHmmss` in **GMT+7**. |
+| `vnp_NotifyUrl` | where the gateway sends the server-to-server notification. **Not optional**: without it VNPay has no way to deliver the IPN, and the order stays `PENDING_PAYMENT` forever. |
 | Success | `vnp_ResponseCode == '00'` **and** `vnp_TransactionStatus == '00'`. |
 | The IPN request | a **GET** with the parameters in the query string. The reply is HTTP 200 with `{"RspCode":"00","Message":"..."}`. |
 | RspCode | `00` success, `01` order not found, `02` already confirmed, `04` invalid amount, `97` invalid signature, `99` invalid request. |
@@ -226,6 +240,14 @@ The local mock gateway deliberately speaks the **same** wire format -
 amount multiplied by 100, HMAC-SHA512, notification over GET - so the code
 that talks to the real sandbox is the code that talks to the mock. A mock
 with a different contract would hide bugs rather than expose them.
+
+That is not a theoretical concern: `vnp_NotifyUrl` was missing from the
+real provider while the mock had it, and because the mock takes the notify
+address from a form attribute instead of the query string, the whole test
+suite stayed green while the real gateway would never have known where to
+deliver the IPN. `apps/api/test/provider.test.ts` now asserts that both
+providers send the same parameter set, so a mock that is more forgiving
+than the real thing cannot hide a gap again.
 
 ### Credentials
 
@@ -288,34 +310,104 @@ The IPN endpoint is:
 POST {PUBLIC_BASE_URL}/api/ipn/vnpay
 ```
 
-It answers with `{"RspCode":"00","RspStatus":"00"}` on success and
-`{"RspCode":"02"}` on a rejected notification - the response body VNPay
-expects. Rejections are logged by the API.
+It answers with HTTP 200 and a JSON body, always - that is what makes the
+gateway stop retrying:
+
+| `RspCode` | When |
+| --- | --- |
+| `00` | the notification was applied (the money was booked) |
+| `02` | already confirmed - the same notification arrived again |
+| `01` | no order with that `vnp_TxnRef` |
+| `04` | the amount on the notification is not the amount of the order |
+| `97` | the signature does not match our secret key |
+| `99` | the request has no transaction reference |
+
+Every notification - including the rejected ones - is written to the
+`payment_events` table, which is the reconciliation log an operator
+compares against the gateway's own transaction list.
 
 To exercise it without the real gateway, `apps/api/scripts/e2e.ts` signs a
 payload exactly the way VNPay does and posts it three times, proving the
-handler is idempotent.
+handler is idempotent: the money is booked once and the replays are
+answered with `02`.
 
 ### The demo walkthrough (5 minutes)
 
 With `MOCK_GATEWAY=true` (the default) the whole flow runs locally:
 
 1. Open <http://localhost:3000> - pick an event.
-2. Choose a listing, set the quantity, press **Thanh toan**. The browser is
+2. Choose a listing, set the quantity, press **Thanh toán**. The browser is
    redirected to the simulated gateway page.
-3. Press **Thanh toan \<amount\> VND**. The page signs the payload and POSTs
+3. Press **Thanh toán \<amount\> VND**. The page signs the payload and sends
    it to the app's own IPN endpoint, exactly like VNPay does, then sends you
    back to the order page.
-4. The order page shows **Da thanh toan (escrow)** and the money split.
-5. Switch the user (top right) to a seller and open **Vi cua toi**: the money
-   is in *Cho giai ngan (escrow)*, not yet *Khai dung*.
-6. Switch to **Ops Admin** and press **Hoan tat su kien (giai ngan escrow)**
-   on the event list. Only the admin role sees that button, and the server
-   action checks the role too.
-7. The seller's wallet now shows the money under *Khai dung*, and the order
-   is **Da giai ngan**.
-8. Open **So cai** to see every journal entry and the derived balances, with
-   a line that says the ledger is *can bang* (balanced).
+4. The order page shows **Đã thanh toán - tiền giữ trong escrow** and the
+   money split.
+5. Switch the user (top right) to a seller and open **Ví của tôi**: the money
+   is in *Chờ giải ngân (escrow)*, not yet *Khả dụng*.
+6. Switch to **Ops Admin** and press **Hoàn tất sự kiện** on the event list
+   (or **Giải ngân escrow cho sự kiện này** on the dashboard). Only the admin
+   role sees that button, and the server action checks the role too.
+7. The seller's wallet now shows the money under *Khả dụng*, and the order
+   is **Đã giải ngân**.
+8. Open **Sổ cái** to see every journal entry and the derived balances, with
+   a line that says the ledger is *cân bằng* (balanced).
+
+### Using the storefront
+
+The storefront is a small demo with no real authentication. The dropdown in
+the header - **Đổi người dùng** - switches the acting user, and everything
+on the page is rendered for that user.
+
+| Page | What it is for |
+| --- | --- |
+| **Sự kiện** (`/`) | The event list. Every card shows the venue, the start time, how many tickets are left and how many listings it has. The price model is explained at the bottom of the page. |
+| **Sự kiện → một sự kiện** (`/events/<id>`) | The listings of one event. Each listing is a checkout form: pick a quantity, see the fee breakdown update live, press **Thanh toán**. |
+| **Kết quả thanh toán** (`/orders/<id>`) | The order status, the money split and every IPN the gateway sent for this order. The page polls the API every 3 seconds while the order is still waiting for the gateway. |
+| **Ví của tôi** (`/wallet`) | The acting user's wallet: money waiting for release (escrow), money available to withdraw, and the transaction history. |
+| **Sổ cái** (`/ledger`) | The platform-wide double-entry journal: the balance of every account and every posted entry. |
+| **Quản trị** (`/admin`) | The operations dashboard. Only shown to the `admin` role. |
+
+**Reading the money model.** The buyer pays the listing price plus a 10%
+service fee; the seller receives the price minus 5%; the platform keeps the
+15% difference. The two seller balances are the escrow split:
+
+- **Chờ giải ngân** - the money is at the gateway but still owed to the
+  seller. It only moves to *Khả dụng* when the event is completed.
+- **Khả dụng** - released, ready to withdraw.
+
+**Why the buyer is redirected to a gateway and nothing happens yet.** The
+**Thanh toán** button only creates an order in `PENDING_PAYMENT` state and
+redirects the browser. No money moves. The money moves when the gateway's
+IPN arrives at `/api/ipn/vnpay` - the redirect in the browser is never
+trusted, which is why the order page keeps polling instead of assuming the
+payment went through.
+
+**The 15-minute hold.** A created order reserves its tickets for 15 minutes.
+If the buyer never pays, the order becomes **Hết thời gian giữ vé** and the
+tickets go back to the listing. If the buyer pays *after* that window, the
+order becomes **Cần hoàn tiền** - the money is booked as owed to the buyer,
+not as seller escrow.
+
+**Releasing the escrow.** Only the admin can do it, from the event list or
+from the dashboard. Completing an event releases every escrowed seller
+balance at once and cancels the orders that were never paid for. An event
+that has been completed stops selling tickets: the checkout button is
+disabled and reads **Đã kết thúc**.
+
+**Reading the ledger.** Every money movement is one entry with two lines
+(a debit and a credit). **Nợ** is the debit side and **Có** is the credit
+side, and every entry balances: `Tổng Nợ = Tổng Có`. No balance is stored
+anywhere - it is always derived from the journal, so the wallet, the
+dashboard and the ledger can never disagree. Click an account code to expand
+it, or press **Chép** to copy the full code.
+
+**The mock gateway.** `MOCK_GATEWAY=true` (the default) mounts `/mock-pay`,
+a fake VNPay page. It has two buttons: **Thanh toán** (succeeds) and **Thanh
+toán thất bại (mô phỏng)** (declines). Both sign the payload with the same
+HMAC-SHA512 routine the real gateway uses, so the IPN that arrives at our
+own endpoint is indistinguishable from a real one. Use the failing button to
+see the tickets return to the listing.
 
 ---
 
@@ -410,6 +502,13 @@ PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEAS
         +--(IPN, verified, but too late)--> REFUND_REQUIRED
 ```
 
+- **Every successful payment books the money.** If the order can still be
+  fulfilled it is a normal capture; if it cannot (it was declined, expired,
+  or the event was completed), the amount is booked as
+  `liability:refund_payable` - money owed back to the buyer - and the
+  reserved ticket is returned to the listing. A notification is never
+  accepted and then dropped on the floor.
+
 - The **buyer's redirect back from the gateway never changes state.** The
   result page reads the persisted status and polls it. If the IPN has not
   arrived yet the order honestly shows "waiting for the gateway".
@@ -420,7 +519,10 @@ PENDING_PAYMENT --(IPN, verified, in time)--> PAID --(event completed)--> RELEAS
 - The IPN is rejected (no ledger write) if the signature does not match, if
   the amount differs from the order, or if the order is unknown. The
   rejection codes follow the official list: `97` invalid signature, `01`
-  order not found, `04` invalid amount, `02` already confirmed.
+  order not found, `04` invalid amount, `99` invalid request.
+- A **replayed** notification (the same `provider_txn_id` arriving again)
+  is answered with `02` "already confirmed". The money was booked on the
+  first delivery; the replay changes nothing.
 - A *valid* notification that reports a **declined** payment is **applied**,
   not dropped: the order becomes `FAILED` and the reserved tickets go back to
   the listing. Only an invalid signature means "not trustworthy"; a declined
@@ -474,8 +576,14 @@ it.
 docker-compose.yml          postgres + api + web (+ optional tunnel profile)
 .env.example
 packages/shared/            money helpers, fee model, zod schemas, unit tests
+  src/money.ts             integer VND arithmetic (no floats anywhere)
+  src/fees.ts              the 10% / 5% split and the rounding rule
+  src/account-code.ts      shortening an account code for display
+  src/ledger-labels.ts     the Vietnamese headline of a journal entry
+  src/schemas.ts           the zod schemas shared by the API and the web
 apps/api/
-  src/db/                   schema.sql, migrate, seed, accounts
+  src/db/                   schema.sql, migrate, seed, accounts, isolated
+  src/db/legacy-text.ts     repairs names written without Vietnamese diacritics
   src/services/ledger.ts    double-entry posting, balances, audit
   src/services/orders.ts    order lifecycle, IPN handling, escrow release
   src/services/admin.ts     the operations dashboard aggregates
@@ -485,6 +593,16 @@ apps/api/
   src/routes/               HTTP API + the mock payment page
   scripts/e2e-run.ts       boots the API and runs the e2e check in one command
   scripts/e2e.ts           the money-flow assertions themselves
+  test/                    unit + integration tests (a private schema each)
+    helpers/db.ts          creates the throwaway schema, points the app at it
+    helpers/fixtures.ts    the rows a test needs (users, events, listings)
+    ledger.test.ts         the signature algorithm and the posting guardrails
+    provider.test.ts       the redirect request sent to the gateway
+    orders.test.ts         the checkout rules
+    ipn.test.ts            the gateway notification
+    http.test.ts           the HTTP surface and the response codes
+    invariants.test.ts     the money invariants
+    legacy-text.test.ts    the repair of the unaccented names
 apps/web/
   src/app/page.tsx          event list
   src/app/events/[id]/      event page with listings (SSR)
@@ -493,10 +611,12 @@ apps/web/
   src/app/ledger/           the journal and all account balances
   src/app/admin/            the operations dashboard (admin only)
   src/app/actions.ts        server actions: checkout, switch user, complete event
+  src/components/           ListingCheckoutForm, AccountCode, the shared UI
 scripts/
   dev.sh                    starts the stack, freeing the ports it needs first
   dev-local.sh              runs the apps on the host against the compose db
   push-to-github.sh         creates the remote (if needed) and pushes
+.github/workflows/ci.yml   typecheck + unit + integration + e2e on every push
 ```
 
 ---
@@ -563,6 +683,13 @@ scripts/
 17. **The e2e test provisions its own fixture** and asserts *deltas* rather
     than absolute balances. It can therefore run repeatedly against the same
     database without a reset, which is what a reviewer will actually do.
+    The run itself happens in a **private Postgres schema** that is dropped
+    again afterwards. That was not the first design: the e2e script used to
+    write straight into the developer's database and never cleaned up, so
+    every run left an `E2E event ...` behind and the storefront slowly
+    filled up with events nobody had booked. The integration tests already
+    used a private schema; the e2e runner now does the same, through the
+    shared `src/db/isolated.ts` helper.
 18. **One `.env` drives both Docker and a host-run process.** The values in
     it are always *host* values (`localhost`). The container-side values
     (`db`, `api`) are hard-coded in `docker-compose.yml` instead of being
@@ -757,19 +884,118 @@ Desktop's disk was full, so ports had to be made configurable).
   after the sweep was **silently dropped** - the buyer's money would have
   disappeared. Fixed by treating `EXPIRED` as a late payment that still has
   to be settled as `REFUND_REQUIRED`.
+- A final audit of the IPN handler against every order status found **three
+  more money bugs**, all of the same shape: a *successful* notification that
+  arrived for an order that could no longer be fulfilled was accepted
+  (`RspCode 00`) but **nothing was posted to the ledger** - the buyer's
+  money simply disappeared. The gateway cash did not grow and no liability
+  towards the buyer was created.
+  - **Decline, then a successful retry.** The buyer declined at the gateway
+    (the order became `FAILED` and the ticket went back to the listing) and
+    then paid successfully on a retry. The retry was accepted and the money
+    was dropped.
+  - **Payment after the event was completed.** The order had become
+    `CANCELLED`, the notification arrived afterwards, and the money was
+    dropped.
+  - **A late payment that leaked a ticket.** When a payment arrived after
+    the reservation window but *before* the lazy sweep had run, the order
+    became `REFUND_REQUIRED` and the money was booked correctly - but the
+    reserved ticket was never given back. The sweep only ever touches
+    `PENDING_PAYMENT` orders, so a `REFUND_REQUIRED` order would hold its
+    ticket forever: the stock leaked away with every late payment.
+
+  All three are fixed: a successful payment now always books the money. If
+  the order can still be fulfilled it is a normal capture; if it cannot, the
+  amount is booked as `liability:refund_payable` (money owed back to the
+  buyer), and the reserved ticket is returned to the listing. The amount is
+  now also checked on *every* notification, not only on the success path.
+  The e2e script asserts each of the three cases.
+- Writing the integration tests (section 9) found **two more**:
+  - **A second payment for an order that was already paid.** The first fix
+    above deliberately excluded `PAID` / `RELEASED` / `REFUND_REQUIRED` from
+    the refund branch, on the reasoning that "their money was already
+    booked". That reasoning is wrong for a *second* payment: the buyer
+    handed over real money that the order does not account for, and it
+    was simply dropped. The buyer paid twice and the second payment
+    vanished. The rule is now: a notification that is *new* and cannot be
+    fulfilled always books the amount as owed to the buyer.
+  - **A ticket cheap enough that the platform fee rounds to zero.** 5% of a
+    9-dong subtotal is 0, and the journal rejects a zero-amount line
+    (`CHECK (amount_vnd > 0)`). The whole capture therefore threw, so the
+    buyer was charged for a ticket that was never booked - a payment that
+    failed outright on a cheap listing. A zero-amount line is now left out
+    of the posting instead of failing it.
+- A review of the whole flow against the brief found **one bug that the
+  test suite could not see**: `VnPayProvider.createPayment` never sent
+  `vnp_NotifyUrl`. The parameter was passed in and then dropped, so the
+  real gateway would never have known where to deliver the IPN - the
+  payment page would load, the buyer would pay, and the order would sit
+  in `PENDING_PAYMENT` forever. The whole suite was green, because the
+  *mock* gateway takes the notify address from a form attribute rather
+  than from the query string, so it did not need the parameter at all.
+  The mock was more forgiving than the real thing, which is exactly the
+  failure mode a mock is supposed to prevent. Fixed, and
+  `apps/api/test/provider.test.ts` now asserts that both providers send
+  the same parameter set - so a mock that drifts ahead of reality can no
+  longer hide a gap.
 
 ---
 
 ## 9. Test coverage
 
-`npm test` runs the unit tests:
+There are three layers, and each one covers what the others cannot.
+
+### Unit tests (no database)
+
+`npm run test:unit`:
 
 - `packages/shared/test/fees.test.ts` - the 10%/5% split, rounding, and the
   invariant `gross == sellerNet + platformFee` across a grid of amounts
   (including a wide sweep of odd prices and quantities).
+- `packages/shared/test/ledger-labels.test.ts` - the Vietnamese headline of a
+  journal entry, derived from the entry *type* rather than from the memo
+  that was stored with it (a memo can never be rewritten).
+- `packages/shared/test/account-code.test.ts` - the shortening of an account
+  code for display: the UUID is cut to its first eight characters, the
+  meaningful parts are kept, and shortening twice changes nothing.
 - `apps/api/test/ledger.test.ts` - the VNPay signature algorithm (a tampered
   payload must be rejected) and the guardrails of `postTransaction` (an
   unbalanced or single-line posting must throw).
+
+### Integration tests (a real database)
+
+`npm run test:api` - 68 tests that run against a real Postgres, in a
+**private schema per test file** that is dropped afterwards. The
+developer's own database is never touched, and the tests can be run as
+often as you like.
+
+Each test file gets its own schema (`tce_<name>_<random>`) and points the
+`search_path` at it, so the application code runs unmodified against a
+database of its own. That is why the HTTP tests can boot the real server
+and still be safe.
+
+| File | What it covers |
+|---|---|
+| `test/orders.test.ts` | the checkout rules: an invalid quantity, an unknown listing, a seller buying their own ticket, a completed event, not enough tickets left, the `Idempotency-Key` (same order, and scoped per buyer), two buyers racing for the last ticket, eight buyers racing for three tickets, and the expiry sweep |
+| `test/ipn.test.ts` | the gateway notification: a normal capture, the same notification twice, a declined payment, a wrong amount, a late payment, and a second payment for an order that was already paid, released or refunded |
+| `test/http.test.ts` | the HTTP surface: every rejection code (`400`, `404`, `409`), the IPN response codes (`01`, `02`, `04`, `97`, `99`), the escrow release, the cancellation of unpaid orders, the reconciliation log, and the append-only guarantee |
+| `test/invariants.test.ts` | the money invariants over a wide grid of prices and quantities, and a long run of buy-pay-release cycles that must end perfectly solvent |
+| `test/legacy-text.test.ts` | the repair of names and account labels that an older version wrote without Vietnamese diacritics |
+
+Two of these tests found real bugs while they were being written (see
+section 8).
+
+### Provider tests (no database)
+
+`apps/api/test/provider.test.ts` - the redirect request that is sent to the
+gateway. It asserts that `vnp_NotifyUrl` (the IPN callback address) is
+present, that the amount is multiplied by 100, that the request is signed,
+and that the real provider and the local mock send the **same** parameter
+set. That last assertion is the important one: the mock used to be more
+forgiving than the real gateway, which is how a missing `vnp_NotifyUrl`
+survived a fully green test suite.
+
+### End-to-end (the real HTTP flow)
 
 `npm run e2e -w @tce/api` runs the money flow. It boots the API itself and
 provisions a throwaway event, so it needs nothing but a database, and it can
@@ -780,7 +1006,8 @@ be run as often as you like:
 3. replay the checkout with the same `Idempotency-Key` -> the same order
 4. post a correctly signed IPN -> the order becomes `PAID`
 5. post the same IPN three more times -> the ledger booked the money exactly
-   once (asserted by counting the `PAYMENT_CAPTURE` transactions)
+   once (asserted by counting the `PAYMENT_CAPTURE` transactions) and the
+   replays are answered with `RspCode 02` ("already confirmed")
 6. assert the seller's money is in `pending`, not `available`
 7. assert the platform kept 10% + 5% and the gateway holds the gross
 8. mark the event completed -> the money moves to `available`
@@ -795,6 +1022,35 @@ be run as often as you like:
 15. an IPN that arrives *after* the sweep -> the order becomes
     `REFUND_REQUIRED`, the money is booked as `liability:refund_payable`
     (not as seller escrow), and the ledger stays balanced
-16. the admin dashboard agrees with the journal, number for number
-17. every raw notification is logged in `payment_events`, including a
+16. a decline followed by a **successful retry** -> the money is booked as
+    `liability:refund_payable` (it must not disappear)
+17. a late payment that arrives *before* the sweep -> the order becomes
+    `REFUND_REQUIRED` **and the reserved ticket goes back to the listing**
+18. a payment for an order that was cancelled by the event completion ->
+    the money is booked as `liability:refund_payable`
+19. a **second** payment for an order that was already paid -> the money
+    reaches the gateway cash and is booked as `liability:refund_payable`
+    (the seller must not be paid twice)
+20. the admin dashboard agrees with the journal, number for number
+21. every raw notification is logged in `payment_events`, including a
     rejected one (bad signature -> `RspCode 97`, and it is still logged)
+
+---
+
+## 10. Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. install the dependencies
+2. build the shared package
+3. typecheck the API and the web app
+4. run the unit and integration tests
+5. run the end-to-end money flow
+6. build everything
+7. assert the journal is still balanced at the end of the run
+
+It uses a Postgres service container, so the integration tests really run -
+in CI a missing database is a hard error, not a skip. A silently skipped
+suite is worse than a red build.
+
+`npm run verify` runs the same steps locally.

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Typecheck, unit tests and end-to-end
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tickets
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tickets"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/tickets
+      MOCK_GATEWAY: 'true'
+      MOCK_GATEWAY_SECRET: mock-secret-local-dev
+      LOG_LEVEL: error
+      CI: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the shared package
+        run: npm run build:shared
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit and integration tests
+        # The integration tests create a private schema per test file and
+        # drop it afterwards, so they need a reachable database. CI must
+        # fail loudly if there is none - a silently skipped suite is
+        # worse than a red build.
+        run: npm test
+
+      - name: End-to-end money flow
+        run: npm run e2e
+
+      - name: Build
+        run: npm run build
+
+      - name: Check the journal is balanced after the whole run
+        run: |
+          npx --yes tsx -e "
+            import { getSql } from './apps/api/src/db/client.ts';
+            import { auditLedger } from './apps/api/src/services/ledger.ts';
+            const sql = getSql();
+            const audit = await auditLedger(sql);
+            if (!audit.ok) {
+              console.error('unbalanced transactions:', audit.unbalanced);
+              process.exit(1);
+            }
+            console.log('[ci] the journal is balanced');
+          "

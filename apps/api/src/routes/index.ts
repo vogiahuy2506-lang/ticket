@@ -100,7 +100,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       const payment = await provider.createPayment({
         orderId: order.id,
         amountVnd: Number(order.gross_vnd),
-        orderInfo: `Thanh toan don hang ${order.id.slice(0, 8)}`,
+        orderInfo: `Thanh toán đơn hàng ${order.id.slice(0, 8)}`,
         clientIp: req.ip ?? '127.0.0.1',
         returnUrl: `${config.webBaseUrl}/orders/${order.id}`,
         notifyUrl: `${config.publicBaseUrl}/api/ipn/vnpay`,
@@ -246,6 +246,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       { orderId, status: result.status, applied: result.applied },
       'IPN applied',
     );
+
+    // `02` means "this transaction was already confirmed". The handler is
+    // idempotent - the ledger booked the money exactly once - but the
+    // gateway still deserves the honest answer, because it uses it to
+    // decide whether to keep retrying the notification.
+    if (!result.applied) {
+      return reply.code(200).send({ RspCode: '02', Message: 'Already confirmed' });
+    }
 
     return reply.code(200).send({ RspCode: '00', Message: 'Confirm Success' });
   };

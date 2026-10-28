@@ -297,27 +297,35 @@ export async function postPaymentCapture(
   await ensurePlatformAccounts(sql);
   await ensureUserAccounts(sql, args.sellerId, args.sellerId);
 
-  return postTransaction(sql, {
-    refType: 'PAYMENT_CAPTURE',
-    refId: args.orderId,
-    memo: args.memo,
-    lines: [
+  // A very cheap ticket can round the platform fee down to zero (5% of a
+  // 9-dong subtotal is 0). The journal rejects a zero-amount line, so the
+  // zero line is left out instead of failing the whole payment - the
+  // buyer would otherwise be charged for a ticket that is never booked.
+  const lines: PostingLine[] = (
+    [
       {
         accountCode: ACCOUNT_CODES.gatewayCash,
-        direction: 'debit',
+        direction: 'debit' as const,
         amountVnd: args.grossVnd,
       },
       {
         accountCode: pendingAccountCode(args.sellerId),
-        direction: 'credit',
+        direction: 'credit' as const,
         amountVnd: args.sellerNetVnd,
       },
       {
         accountCode: ACCOUNT_CODES.platformFee,
-        direction: 'credit',
+        direction: 'credit' as const,
         amountVnd: args.platformFeeVnd,
       },
-    ],
+    ] satisfies PostingLine[]
+  ).filter((l) => l.amountVnd > 0);
+
+  return postTransaction(sql, {
+    refType: 'PAYMENT_CAPTURE',
+    refId: args.orderId,
+    memo: args.memo,
+    lines,
   });
 }
 

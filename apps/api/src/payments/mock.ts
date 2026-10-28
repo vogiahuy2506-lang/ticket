@@ -60,6 +60,7 @@ export class MockProvider implements PaymentProvider {
       vnp_OrderInfo: input.orderInfo,
       vnp_Locale: 'vn',
       vnp_ReturnUrl: input.returnUrl,
+      vnp_NotifyUrl: input.notifyUrl,
       vnp_IpAddr: input.clientIp,
     };
     const query = new URLSearchParams({ ...params, vnp_SecureHash: sign(params) });
@@ -76,7 +77,7 @@ export class MockProvider implements PaymentProvider {
         signatureValid: false,
         ok: false,
         code: '97',
-        message: 'Chu ky IPN khong hop le',
+        message: 'Chữ ký IPN không hợp lệ',
         raw: payload,
       };
     }

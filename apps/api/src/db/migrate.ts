@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSql } from './client.js';
+import { fixLegacyAccountNames, fixLegacyUserNames } from './legacy-text.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -33,6 +34,17 @@ export async function migrate(): Promise<void> {
   await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   const schema = readFileSync(findSchema(), 'utf8');
   await sql.unsafe(schema);
+  // Reference data that an older version wrote without Vietnamese diacritics.
+  // The journal itself is append-only, but the names of the seeded users
+  // and the account labels are not, so they are refreshed here.
+  const renamed = await fixLegacyUserNames(sql);
+  if (renamed > 0) {
+    console.log(`[migrate] renamed ${renamed} legacy user(s) to accented names`);
+  }
+  const relabelled = await fixLegacyAccountNames(sql);
+  if (relabelled > 0) {
+    console.log(`[migrate] relabelled ${relabelled} legacy account(s)`);
+  }
   console.log('[migrate] schema applied');
 }
 

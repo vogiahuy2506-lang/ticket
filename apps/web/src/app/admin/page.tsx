@@ -25,13 +25,13 @@ const ORDER_TONE: Record<string, 'warning' | 'success' | 'danger' | 'neutral' | 
 };
 
 const ORDER_LABEL: Record<string, string> = {
-  PENDING_PAYMENT: 'Cho thanh toan',
+  PENDING_PAYMENT: 'Chờ thanh toán',
   PAID: 'Trong escrow',
-  RELEASED: 'Da giai ngan',
-  FAILED: 'That bai',
-  CANCELLED: 'Da huy',
-  EXPIRED: 'Het han giu ve',
-  REFUND_REQUIRED: 'Can hoan tien',
+  RELEASED: 'Đã giải ngân',
+  FAILED: 'Thất bại',
+  CANCELLED: 'Đã hủy',
+  EXPIRED: 'Hết hạn giữ vé',
+  REFUND_REQUIRED: 'Cần hoàn tiền',
 };
 
 /**
@@ -49,8 +49,8 @@ export default async function AdminPage() {
   if (!operator) {
     return (
       <EmptyState
-        title="Chi quan tri vien moi vao duoc trang nay"
-        hint="Doi nguoi dung o thanh tren sang 'Ops Admin' de xem bang dieu khien."
+        title="Chỉ quản trị viên mới vào được trang này"
+        hint="Đổi người dùng ở thanh trên sang 'Ops Admin' để xem bảng điều khiển."
       />
     );
   }
@@ -64,12 +64,12 @@ export default async function AdminPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Bang dieu khien"
+        title="Bảng điều khiển"
         subtitle={
           <span>
-            Dang xem voi quyen <span className="font-semibold">{operator.name}</span>
+            Đang xem với quyền <span className="font-semibold">{operator.name}</span>
             {' · '}
-            so du duoc tinh truc tiep tu so ke doi entry.
+            số dư được tính trực tiếp từ sổ kế toán entry.
           </span>
         }
         action={<Badge tone="brand">admin</Badge>}
@@ -78,50 +78,50 @@ export default async function AdminPage() {
       {/* ------------------------------------------------------- money */}
       <section className="space-y-3">
         <SectionTitle
-          title="Tien cua san"
-          hint="Tat ca deu doc ra tu ledger, khong co so du nao duoc luu rieng."
+          title="Tiền của sàn"
+          hint="Tất cả đều đọc ra từ ledger, không có số dư nào được lưu riêng."
         />
         <div className="grid grid-cols-2 gap-3">
           <StatCard
-            label="Dang giu trong escrow"
+            label="Đang giữ trong escrow"
             value={formatVnd(overview.escrowHeldVnd)}
-            hint="Tien con no nguoi ban, chua duoc rut."
+            hint="Tiền còn nợ người bán, chưa được rút."
             tone="warning"
           />
           <StatCard
-            label="Da giai ngan"
+            label="Đã giải ngân"
             value={formatVnd(overview.releasedVnd)}
-            hint="Tien da chuyen sang so du kha dung."
+            hint="Tiền đã chuyển sang số dư khả dụng."
             tone="success"
           />
           <StatCard
-            label="Tien tai cong thanh toan"
+            label="Tiền tại cổng thanh toán"
             value={formatVnd(overview.gatewayCashVnd)}
-            hint="Tien san trong gateway."
+            hint="Tiền sẵn trong gateway."
             tone="muted"
           />
           <StatCard
-            label="Doanh thu phi"
+            label="Doanh thu phí"
             value={formatVnd(overview.platformFeeVnd)}
-            hint="San giu 15% tren moi don hang."
+            hint="Sàn giữ 15% trên mỗi đơn hàng."
             tone="brand"
           />
           <StatCard
-            label="Tien phai hoan lai"
+            label="Tiền phải hoàn lại"
             value={formatVnd(overview.refundPayableVnd)}
-            hint="Thanh toan den muon - san no nguoi mua."
+            hint="Thanh toán đến muộn - sàn nợ người mua."
             tone="danger"
           />
         </div>
         <div className="card space-y-1">
           <MoneyRow
-            label="Tong gia tri da qua cong (gross)"
+            label="Tổng giá trị đã qua cổng (gross)"
             value={formatVnd(overview.grossVolumeVnd)}
             strong
           />
           <div className="border-t border-ink-100 pt-1">
             <MoneyRow
-              label={`Don hang dang cho gateway (${overview.pendingOrderCount})`}
+              label={`Đơn hàng đang chờ gateway (${overview.pendingOrderCount})`}
               value={formatVnd(
                 overview.stuckOrders.reduce((s, o) => s + o.grossVnd, 0),
               )}
@@ -134,13 +134,13 @@ export default async function AdminPage() {
       {/* --------------------------------------------- stuck orders */}
       <section className="space-y-3">
         <SectionTitle
-          title="Don hang treo"
-          hint="Da tao order nhung chua co IPN nao xac nhan. Tien chua vao escrow."
+          title="Đơn hàng treo"
+          hint="Đã tạo order nhưng chưa có IPN nào xác nhận. Tiền chưa vào escrow."
         />
         {overview.stuckOrders.length === 0 ? (
           <EmptyState
-            title="Khong co don hang nao treo"
-            hint="Moi don hang da duoc xac nhan hoac chuyen trang thai."
+            title="Không có đơn hàng nào treo"
+            hint="Mỗi đơn hàng đã được xác nhận hoặc chuyển trạng thái."
           />
         ) : (
           <div className="card overflow-hidden p-0">
@@ -179,13 +179,13 @@ export default async function AdminPage() {
       {/* ------------------------------------ events awaiting release */}
       <section className="space-y-3">
         <SectionTitle
-          title="Su kien cho giai ngan"
-          hint="Su kien da co don hang tra tien nhung chua duoc giai ngan cho nguoi ban."
+          title="Sự kiện chờ giải ngân"
+          hint="Sự kiện đã có đơn hàng trả tiền nhưng chưa được giải ngân cho người bán."
         />
         {overview.eventsAwaitingRelease.length === 0 ? (
           <EmptyState
-            title="Khong co su kien nao cho giai ngan"
-            hint="Moi su kien da duoc giai ngan xong hoac chua co ai mua ve."
+            title="Không có sự kiện nào chờ giải ngân"
+            hint="Mọi sự kiện đã được giải ngân xong hoặc chưa có ai mua vé."
           />
         ) : (
           <div className="space-y-2.5">
@@ -211,14 +211,14 @@ export default async function AdminPage() {
                       {formatVnd(e.escrowVnd)}
                     </p>
                     <p className="text-xs text-ink-400">
-                      {e.paidOrders} don hang da tra
+                      {e.paidOrders} đơn hàng đã trả
                     </p>
                   </div>
                 </div>
                 <form action={completeEvent}>
                   <input type="hidden" name="eventId" value={e.eventId} />
                   <button type="submit" className="btn-secondary">
-                    Giai ngan escrow cho su kien nay
+                    Giải ngân escrow cho sự kiện này
                   </button>
                 </form>
               </article>
@@ -230,11 +230,11 @@ export default async function AdminPage() {
       {/* ------------------------------------------ per-seller escrow */}
       <section className="space-y-3">
         <SectionTitle
-          title="Escrow theo nguoi ban"
-          hint="Ai dang giu bao nhieu, va bao nhieu da giai ngan."
+          title="Escrow theo người bán"
+          hint="Ai đang giữ bao nhiêu, và bao nhiêu đã giải ngân."
         />
         {overview.sellerEscrows.length === 0 ? (
-          <EmptyState title="Khong co nguoi ban nao" />
+          <EmptyState title="Không có người bán nào" />
         ) : (
           <div className="card overflow-hidden p-0">
             <ul className="divide-line">
@@ -248,10 +248,10 @@ export default async function AdminPage() {
                   </span>
                   <div className="flex items-center gap-4 text-xs">
                     <span className="table-num text-amber-700">
-                      Giu: {formatVnd(s.pendingVnd)}
+                      Giữ: {formatVnd(s.pendingVnd)}
                     </span>
                     <span className="table-num text-emerald-700">
-                      Da giai ngan: {formatVnd(s.availableVnd)}
+                      Đã giải ngân: {formatVnd(s.availableVnd)}
                     </span>
                   </div>
                 </li>
@@ -264,11 +264,11 @@ export default async function AdminPage() {
       {/* ------------------------------------------------ all orders */}
       <section className="space-y-3">
         <SectionTitle
-          title="Tat ca don hang"
-          hint={`${orders.length} don hang, moi nhat truoc`}
+          title="Tất cả đơn hàng"
+          hint={`${orders.length} đơn hàng, mới nhất trước`}
         />
         {orders.length === 0 ? (
-          <EmptyState title="Chua co don hang nao" />
+          <EmptyState title="Chưa có đơn hàng nào" />
         ) : (
           <div className="card overflow-hidden p-0">
             <ul className="divide-line">
@@ -306,11 +306,11 @@ export default async function AdminPage() {
       {/* ------------------------------------------ raw gateway log */}
       <section className="space-y-3">
         <SectionTitle
-          title="Nhat ky IPN thô"
-          hint="Moi thong bao tu cong thanh toan, ke ca cai bi tu choi. Dung de doi soat voi danh sach giao dich cua cong."
+          title="Nhật ký IPN thô"
+          hint="Mọi thông báo từ cổng thanh toán, kể cả cái bị từ chối. Dùng để đối soát với danh sách giao dịch của cổng."
         />
         {rawEvents.length === 0 ? (
-          <EmptyState title="Chua co thong bao IPN nao" />
+          <EmptyState title="Chưa có thông báo IPN nào" />
         ) : (
           <div className="card overflow-hidden p-0">
             <ul className="divide-line">
@@ -321,7 +321,7 @@ export default async function AdminPage() {
                 >
                   <div className="min-w-0">
                     <p className="truncate font-mono text-xs text-ink-700">
-                      {e.txn_ref ?? '(khong co txn_ref)'}
+                      {e.txn_ref ?? '(không có txn_ref)'}
                     </p>
                     <p className="mt-0.5 truncate text-xs text-ink-400">
                       {e.provider_txn_id ?? '-'} ·{' '}
@@ -333,10 +333,10 @@ export default async function AdminPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge tone={e.signature_valid ? 'success' : 'danger'}>
-                      {e.signature_valid ? 'Chu ky hop le' : 'Chu ky sai'}
+                      {e.signature_valid ? 'Chữ ký hợp lệ' : 'Chữ ký sai'}
                     </Badge>
                     <Badge tone={e.applied ? 'info' : 'neutral'}>
-                      {e.applied ? 'Da ap dung' : 'Da bo qua'}
+                      {e.applied ? 'Đã áp dụng' : 'Đã bỏ qua'}
                     </Badge>
                   </div>
                 </li>

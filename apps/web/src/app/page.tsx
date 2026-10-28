@@ -28,12 +28,12 @@ export default async function HomePage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Su kien dang ban ve"
+        title="Sự kiện đang bán vé"
         subtitle={
           events.length > 0 ? (
             <span>
-              {scheduled} su kien sap dien ra - {completed} da hoan tat - {totalTickets}{' '}
-              ve con lai
+              {scheduled} sự kiện sắp diễn ra - {completed} đã hoàn tất - {totalTickets}{' '}
+              vé còn lại
             </span>
           ) : undefined
         }
@@ -53,8 +53,8 @@ export default async function HomePage({
 
       {events.length === 0 ? (
         <EmptyState
-          title="Chua co su kien nao"
-          hint="Chay `npm run db:init` de nap du lieu mau (nguoi mua, nguoi ban, hai su kien)."
+          title="Chưa có sự kiện nào"
+          hint="Chạy `npm run db:init` để nạp dữ liệu mẫu (người mua, người bán, hai sự kiện)."
         />
       ) : null}
 
@@ -67,13 +67,13 @@ export default async function HomePage({
           return (
             <section
               key={event.id}
-              className="card card-interactive overflow-hidden p-0"
+              className="card card-interactive relative overflow-hidden p-0"
             >
               <div className="flex flex-wrap items-start justify-between gap-3 p-4">
                 <div className="min-w-0 flex-1">
                   <Link
                     href={`/events/${event.id}`}
-                    className="text-lg font-semibold leading-snug tracking-tight text-ink-900 underline-offset-4 hover:text-brand-700 hover:underline"
+                    className="text-lg font-semibold leading-snug tracking-tight text-ink-900 underline-offset-4 after:absolute after:inset-0 after:content-[''] hover:text-brand-700 hover:underline"
                   >
                     {event.name}
                   </Link>
@@ -116,7 +116,7 @@ export default async function HomePage({
                 </div>
 
                 <Badge tone={STATUS_TONE[event.status] ?? 'neutral'}>
-                  {event.status === 'completed' ? 'Da hoan tat' : 'Sap dien ra'}
+                  {event.status === 'completed' ? 'Đã hoàn tất' : 'Sắp diễn ra'}
                 </Badge>
               </div>
 
@@ -140,26 +140,26 @@ export default async function HomePage({
                     >
                       {ticketsLeft}
                     </span>{' '}
-                    ve
+                    vé
                   </span>
                 </div>
 
                 {event.status === 'scheduled' ? (
                   isOperator ? (
-                    <form action={completeEvent}>
+                    <form action={completeEvent} className="relative z-10">
                       <input type="hidden" name="eventId" value={event.id} />
                       <button type="submit" className="btn-secondary">
-                        Hoan tat su kien
+                        Hoàn tất sự kiện
                       </button>
                     </form>
                   ) : (
                     <span className="text-xs text-ink-400">
-                      Chi quan tri vien moi giai ngan duoc
+                      Chỉ quản trị viên mới giải ngân được
                     </span>
                   )
                 ) : (
                   <span className="text-xs text-ink-400">
-                    Escrow da duoc giai ngan
+                    Escrow đã được giải ngân
                   </span>
                 )}
               </div>
@@ -169,25 +169,25 @@ export default async function HomePage({
       </div>
 
       <div className="rounded-2xl border border-brand-100 bg-brand-50/70 p-4">
-        <p className="text-sm font-semibold text-brand-900">Cach tinh tien</p>
+        <p className="text-sm font-semibold text-brand-900">Cách tính tiền</p>
         <ul className="mt-2 space-y-1.5 text-sm leading-relaxed text-brand-900/80">
           <li>
-            <span className="font-semibold">Phi nguoi mua 10%</span> - cong them
-            vao tong tien ban tra.
+            <span className="font-semibold">Phí người mua 10%</span> - cộng thêm
+            vào tổng tiền bạn trả.
           </li>
           <li>
-            <span className="font-semibold">Phi nguoi ban 5%</span> - tru khoi
-            tien ban nhan.
+            <span className="font-semibold">Phí người bán 5%</span> - trừ khỏi
+            tiền bạn nhận.
           </li>
           <li>
-            Tien nguoi ban duoc giu trong <span className="font-semibold">escrow</span>{' '}
-            den khi su kien hoan tat moi vao so du kha dung.
+            Tiền người bán được giữ trong <span className="font-semibold">escrow</span>{' '}
+            đến khi sự kiện hoàn tất mới vào số dư khả dụng.
           </li>
         </ul>
         <p className="mt-3 text-sm text-brand-900/80">
-          Xem chi tiet tai trang{' '}
+          Xem chi tiết tại trang{' '}
           <Link href="/ledger" className="font-semibold underline underline-offset-4">
-            So cai
+            Sổ cái
           </Link>
           .
         </p>

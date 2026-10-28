@@ -31,6 +31,14 @@ export const ACCOUNT_KINDS = [
 ] as const;
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
 
+/** The kinds of journal entry the platform posts. */
+export const LEDGER_REF_TYPES = [
+  'PAYMENT_CAPTURE',
+  'ESCROW_RELEASE',
+  'LATE_PAYMENT_REFUND',
+] as const;
+export type LedgerRefType = (typeof LEDGER_REF_TYPES)[number];
+
 /** Where a listing/order stands in the funnel. */
 export const ORDER_STATUS_LABELS_VI: Record<OrderStatus, string> = {
   PENDING_PAYMENT: 'Đang chờ thanh toán',

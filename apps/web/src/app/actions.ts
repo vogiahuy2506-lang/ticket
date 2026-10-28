@@ -67,7 +67,7 @@ export async function startCheckout(formData: FormData): Promise<void> {
 
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { message?: string };
-    redirect(`/?error=${encodeURIComponent(body.message ?? 'Checkout failed')}`);
+    redirect(`/?error=${encodeURIComponent(body.message ?? 'Không tạo được đơn hàng')}`);
     return;
   }
 
@@ -109,7 +109,7 @@ export async function completeEvent(formData: FormData): Promise<void> {
 
   const user = await getCurrentUser();
   if (!user || user.role !== 'admin') {
-    redirect('/?error=' + encodeURIComponent('Chi quan tri vien moi giai ngan duoc'));
+    redirect('/?error=' + encodeURIComponent('Chỉ quản trị viên mới giải ngân được'));
     return;
   }
 
