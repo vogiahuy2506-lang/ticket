@@ -38,6 +38,11 @@ for (const file of envFiles) {
 const nextConfig: NextConfig = {
   output: 'standalone',
   reactStrictMode: true,
+  // The dev tools indicator ("N" in the corner) is a Next.js development
+  // aid. It shows up in the storefront during review and looks like a
+  // leftover from a template, so it is turned off. It only ever appears
+  // in `next dev` anyway - a production build has no indicator at all.
+  devIndicators: false,
   env: {
     // The storefront talks to the API over HTTP. On the host that is the
     // published port from .env; inside compose the web container uses
