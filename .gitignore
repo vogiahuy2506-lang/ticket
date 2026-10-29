@@ -10,3 +10,7 @@ coverage
 
 # a nested clone of this repo (created by hand)
 ticket/
+
+# scratch files (the credentials handover mail lives here - it must never
+# be committed)
+.tmp-vnp/
