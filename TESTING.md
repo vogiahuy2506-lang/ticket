@@ -43,12 +43,11 @@ demo sạch:
 
 ```bash
 docker compose exec api npm run db:reset -w @tce/api
-docker compose exec api npm run db:init  -w @tce/api
 ```
 
-> `db:reset` chỉ **XÓA bảng**, nó không seed lại. Phải chạy cả hai lệnh:
-> `db:reset` (xóa) rồi `db:init` (migrate + seed). `db:init` một mình thì
-> không xóa gì cả, nên nếu đã demo rồi thì dữ liệu cũ vẫn còn.
+Lệnh này **xoá toàn bộ bảng, áp lại schema và seed lại dữ liệu mẫu** — một
+lệnh là xong, không cần chạy thêm `db:init`. (Trước đây `db:reset` chỉ xoá
+bảng, còn `db:init` mới seed; hai lệnh dễ lẫn. Nay đã gộp lại.)
 
 Kiểm tra lại:
 
@@ -388,7 +387,7 @@ npm run e2e        # money flow qua HTTP thật, tự boot API, tự dọn schem
 npm run test:unit  # không cần database
 ```
 
-Kết quả kỳ vọng: **30 unit (shared) + 139 unit+integration (api) + e2e + build**,
+Kết quả kỳ vọng: **30 unit (shared) + 143 unit+integration (api) + e2e + build**,
 tất cả xanh.
 CI GitHub Actions chạy đúng bộ này trên mỗi push.
 
@@ -400,7 +399,7 @@ dữ liệu demo**, nên bạn có thể chạy giữa lúc đang demo.
 ## 7. Checklist nộp bài
 
 - [ ] `docker compose up` (qua `dev.sh`) chạy được từ clone sạch
-- [ ] Dữ liệu sạch trước khi demo: `db:reset` **rồi** `db:init`, cả 2 sự kiện
+- [ ] Dữ liệu sạch trước khi demo: `db:reset` (1 lệnh là đủ), cả 2 sự kiện
       `scheduled`, `orders` = 0, `ledger_transactions` = 0
 - [ ] `.env.example` có đủ biến, **không** chứa credential thật
 - [ ] README đủ 5 mục bắt buộc: cách chạy + callback, cổng & lý do, quyết định

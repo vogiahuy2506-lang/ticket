@@ -1,11 +1,25 @@
 import { getSql } from './client.js';
+import { migrate } from './migrate.js';
+import { seed } from './seed.js';
 
 /**
- * Drops and recreates every table. Used by `npm run db:reset`.
+ * Puts the database back into the state a fresh clone has: every table
+ * dropped, the schema applied again, and the demo data seeded.
+ *
+ * Decision (brief was silent): `db:reset` used to drop the tables and
+ * stop there, while the README called it "wipe and re-seed". That was a
+ * trap: following the documentation left the reviewer with an empty
+ * database and no demo data, and the two commands needed to get back
+ * (`db:reset` then `db:init`) were easy to get wrong.
+ *
+ * A command called "reset" should leave the database *reset*, not
+ * half-reset. So the whole cycle lives here, and the README, the test
+ * plan and the troubleshooting notes all describe the same single
+ * command.
  *
  * The append-only triggers have to go first: `DROP TABLE` fires a
- * `DELETE`-shaped event on every row, and the trigger would refuse it. The
- * triggers are recreated by the next migration.
+ * `DELETE`-shaped event on every row, and the trigger would refuse it.
+ * The triggers are recreated by `migrate()` right afterwards.
  */
 export async function reset(): Promise<void> {
   const sql = getSql();
@@ -21,6 +35,12 @@ export async function reset(): Promise<void> {
       payments, payment_events, orders, listings, events, users CASCADE
   `);
   console.log('[reset] tables dropped');
+
+  // The schema and the demo data are put back, so the database is
+  // *reset* rather than emptied. `migrate()` recreates the triggers the
+  // drop above had to remove.
+  await migrate();
+  await seed();
 }
 
 const isMain =

@@ -57,7 +57,6 @@ Useful commands:
 ```bash
 docker compose logs -f api
 docker compose exec api npm run db:reset -w @tce/api
-docker compose exec api npm run db:init  -w @tce/api
 npm test
 npm run e2e
 ```
@@ -65,8 +64,7 @@ npm run e2e
 | Command | What it does |
 | --- | --- |
 | `docker compose logs -f api` | tail the API logs |
-| `docker compose exec api npm run db:reset -w @tce/api` | drop every table (it does **not** seed again) |
-| `docker compose exec api npm run db:init -w @tce/api` | apply the schema and re-seed the demo data |
+| `docker compose exec api npm run db:reset -w @tce/api` | wipe the database and put it back to a fresh state (schema + demo data) |
 | `npm test` | unit tests + integration tests (needs a database) |
 | `npm run test:unit` | unit tests only (no database) |
 | `npm run test:api` | integration tests only (needs a database) |
@@ -149,6 +147,25 @@ only resolves inside the Compose network. On the host it must be
 A `#` comment was pasted onto the end of a `docker compose` line. Compose
 is not a shell - it reads the `#` as a service name. Keep the comment on
 its own line.
+
+**`zsh: parse error near '&&'`**
+
+A placeholder was pasted where a URL belongs. `<repo>` is fine in a
+document but not in a shell: zsh reads `<` as a redirection and refuses to
+parse the line before `git` even runs. Use the real URL:
+`git clone https://github.com/vogiahuy2506-lang/ticket.git && cd ticket`.
+
+**`fatal: destination path 'ticket' already exists and is not an empty directory`**
+
+The repository was already cloned. `git clone` wants an empty directory;
+there is no need to clone again - just `cd` into the existing one.
+
+**The containers stopped after the terminal was closed**
+
+`docker compose up` runs in the foreground, so `Ctrl+C` stops the
+containers as well. Start them in the background instead:
+`docker compose up -d`. The data is not lost - it lives in the `db-data`
+volume.
 
 ### Running without Docker
 
@@ -1470,6 +1487,15 @@ made configurable).
   labelled as a **simulation** ("Trang thanh toán MÔ PHỎNG - không phải
   VNPay") with generic marks, because a local simulator that looks like
   the real gateway is a trap for anyone reviewing the flow.
+- The `db:reset` command was **half a command**: it dropped the tables and
+  stopped there, while the README described it as "wipe and re-seed". A
+  reviewer who followed the documentation would have ended up with an
+  empty database and no demo data, and the fix (running `db:init` as well)
+  was not written down anywhere. The command now does the whole cycle -
+  drop, migrate, seed - so it leaves the database *reset* rather than
+  half-reset, and `test/db-reset.test.ts` pins that: the demo data is
+  there, no order and no journal entry, the append-only triggers the
+  `DROP TABLE` had to remove are back, and it can be run twice in a row.
 
 ---
 
@@ -1499,7 +1525,7 @@ There are three layers, and each one covers what the others cannot.
 
 ### Integration tests (a real database)
 
-`npm run test:api` runs the whole API suite (125 tests). The 82 in the
+`npm run test:api` runs the whole API suite (143 tests). The 105 in the
 files below run against a real Postgres, in a
 **private schema per test file** that is dropped afterwards. The
 developer's own database is never touched, and the tests can be run as
@@ -1520,6 +1546,7 @@ and still be safe.
 | `test/invariants.test.ts` | the money invariants over a wide grid of prices and quantities, and a long run of buy-pay-release cycles that must end perfectly solvent |
 | `test/legacy-text.test.ts` | the repair of names and account labels that an older version wrote without Vietnamese diacritics |
 | `test/create-event.test.ts` | creating a new event: the local start time is stored with the +07:00 offset, a listing must belong to a real seller, and no money moves |
+| `test/db-reset.test.ts` | the reset command: it has to leave the demo data behind (not an empty database), no order and no journal entry, the append-only triggers it had to drop are back, and it can be run twice in a row |
 | `test/rate-limit.test.ts` | the limiter on the webhook: the budget is counted per client, a refused request still counts, and a legitimate burst is never refused |
 
 Two of these tests found real bugs while they were being written (see
