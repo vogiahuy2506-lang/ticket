@@ -85,8 +85,6 @@ function qrMatrix(seed: string, size = 29): boolean[][] {
     const row = grid[r];
     if (row) row[c] = on;
   };
-  /** Bounds-checked get. */
-  const get = (r: number, c: number) => grid[r]?.[c] ?? false;
 
   for (let r = 0; r < size; r++) {
     for (let c = 0; c < size; c++) set(r, c, rand() > 0.5);

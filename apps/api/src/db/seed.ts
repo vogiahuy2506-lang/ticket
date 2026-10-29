@@ -5,13 +5,11 @@ import { fixLegacyAccountNames, fixLegacyUserNames } from './legacy-text.js';
 /**
  * Idempotent seed.
  *
- * Decision (brief was silent): users are looked up by a stable `slug` so
- * re-running the seed never duplicates data and the demo users always have
- * stable ids.
+ * Decision (brief was silent): the seeded users are looked up by **name**,
+ * so re-running the seed never duplicates data. `users.name` is UNIQUE, so
+ * the lookup is unambiguous; a slug column would have been a second identity
+ * for the same row without buying anything here.
  */
-const BUYER_SLUG = 'buyer-lan';
-const SELLER_SLUGS = ['seller-minh', 'seller-huy'];
-
 export async function seed(): Promise<void> {
   const sql = getSql();
 
@@ -20,7 +18,11 @@ export async function seed(): Promise<void> {
   await fixLegacyUserNames(sql);
   await fixLegacyAccountNames(sql);
 
-  const users = await sql<{ id: string; name: string }[]>`
+  // `ON CONFLICT DO NOTHING` keeps the insert idempotent, but it only
+  // returns the rows it actually inserted - the users that were already
+  // there are not in the result. So the ids are read back with a plain
+  // SELECT, which also gives the accounts below the users they belong to.
+  await sql`
     INSERT INTO users (name, role)
     VALUES
       ('Nguyễn Lan (người mua)', 'buyer'),
@@ -30,16 +32,12 @@ export async function seed(): Promise<void> {
       ('Võ Chị (người bán)', 'seller'),
       ('Ops Admin', 'admin')
     ON CONFLICT DO NOTHING
-    RETURNING id, name
   `;
 
-  // ON CONFLICT DO NOTHING cannot target a slug because there is no unique
-  // index on name yet; use a select-then-insert to stay idempotent.
   const allUsers = await sql<{ id: string; name: string; role: string }[]>`
     SELECT id, name, role FROM users ORDER BY name
   `;
   const byName = new Map(allUsers.map((u) => [u.name, u]));
-  void users;
 
   const buyer = byName.get('Nguyễn Lan (người mua)');
   const seller1 = byName.get('Trần Minh (người bán)');

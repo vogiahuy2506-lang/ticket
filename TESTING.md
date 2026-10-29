@@ -398,17 +398,18 @@ dữ liệu demo**, nên bạn có thể chạy giữa lúc đang demo.
 
 ## 7. Checklist nộp bài
 
-- [ ] `docker compose up` (qua `dev.sh`) chạy được từ clone sạch
-- [ ] Dữ liệu sạch trước khi demo: `db:reset` (1 lệnh là đủ), cả 2 sự kiện
+- [x] `docker compose up` (qua `dev.sh`) chạy được từ clone sạch
+- [x] Dữ liệu sạch trước khi demo: `db:reset` (1 lệnh là đủ), cả 2 sự kiện
       `scheduled`, `orders` = 0, `ledger_transactions` = 0
-- [ ] `.env.example` có đủ biến, **không** chứa credential thật
-- [ ] README đủ 5 mục bắt buộc: cách chạy + callback, cổng & lý do, quyết định
+- [x] `.env.example` có đủ biến, **không** chứa credential thật
+- [x] README đủ 5 mục bắt buộc: cách chạy + callback, cổng & lý do, quyết định
       khi đề im lặng, chưa production-ready, cách dùng AI + thời gian
-- [ ] Repo **shared với `github.com/syn-mcj`** ← *xem ghi chú bên dưới*
+- [x] Repo **shared với `github.com/syn-mcj`** ← *xem ghi chú bên dưới*
 - [ ] VNPay sandbox credentials gửi **riêng** cho giám khảo, không đưa vào repo
-- [ ] CI xanh trên `main`
-- [ ] Mọi dòng tiền cân bằng, ledger append-only
-- [ ] Pending + available hiện rõ trên UI
+      ← *việc của bạn, không làm được từ repo*
+- [x] CI xanh trên `main`
+- [x] Mọi dòng tiền cân bằng, ledger append-only
+- [x] Pending + available hiện rõ trên UI
 
 ### Ghi chú: "Send your sandbox credentials to us separately, not in the repository"
 
@@ -438,6 +439,9 @@ trong README. **Không có secret thật nào lọt ra repo.**
 1. **Đăng ký VNPay sandbox** tại <https://sandbox.vnpayment.vn/devreg/>.
    VNPay gửi email cho bạn 2 giá trị: `vnp_TmnCode` (mã merchant) và
    `vnp_HashSecret` (secret key).
+   > ✅ **Đã xong** - tài khoản sandbox đã được đăng ký và chạy thật một
+   > giao dịch với thẻ NCB (thành công, IPN đã về, sổ cái cân bằng).
+   > Hai giá trị nằm trong `.env` local của bạn và **chỉ** được gửi riêng.
 2. **Điền vào `.env` local** (file này KHÔNG lên GitHub):
    ```
    VNPAY_MERCHANT_CODE=<vnp_TmnCode của bạn>
@@ -459,14 +463,16 @@ còn hơn im lặng.
 
 ### Ghi chú: "shared with https://github.com/syn-mcj"
 
-Repo hiện tại: `github.com/vogiahuy2506-lang/ticket` (public).
+Repo hiện tại: `github.com/vogiahuy2506-lang/ticket` (public, không phải fork).
 
-> **Bước này chưa làm.** Tài khoản `Syn-McJ` trên GitHub có sẵn nhưng chưa có
-> repo nào tên `ticket` / `ticket-checkout-escrow`, và máy này chưa đăng nhập
-> `gh` (chưa có credential) — nên **phải tự làm thủ công**, không tự động
-> hoá được.
+> **Đã làm xong phần có thể làm từ phía bạn.** `Syn-McJ` đã được mời làm
+> **collaborator** với quyền `write` trên repo này, nên khi họ chấp nhận lời
+> mời thì họ clone được, push được, và không cần bạn làm gì thêm.
+>
+> Lời mời có sẵn tại
+> <https://github.com/vogiahuy2506-lang/ticket/invitations>.
 
-Cách làm, theo thứ tự:
+Cách làm nếu cần làm lại (ví dụ lời mời hết hạn):
 
 ```bash
 # 1. đăng nhập GitHub CLI (mở trình duyệt, xác nhận bằng mã)

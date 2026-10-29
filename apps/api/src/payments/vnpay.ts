@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { toVnSafeText } from '@tce/shared';
 import {
-  buildHashData,
   encodeVnValue,
   sameSignature,
   signVnParams,
@@ -168,6 +167,11 @@ export { sortVnParams };
  * Builds the signed hash exactly as VNPay documents it:
  * HMAC-SHA512(secretKey, hashData), where hashData is the alphabetically
  * sorted, URL-encoded list of non-empty params.
+ *
+ * A thin alias over `signVnParams`, kept because "build the message to be
+ * signed" and "sign the params" are two different things that happen to
+ * have the same result here - and the distinction matters for `querydr`,
+ * which signs differently (see `signVnPipe`).
  */
 export function buildSignMessage(
   params: Record<string, string>,

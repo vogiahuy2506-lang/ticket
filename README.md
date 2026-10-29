@@ -1066,7 +1066,7 @@ apps/web/
 scripts/
   dev.sh                    starts the stack, freeing the ports it needs first
   dev-local.sh              runs the apps on the host against the compose db
-  push-to-github.sh         creates the remote (if needed) and pushes
+  push-to-github.sh         points the remote at a target repo and pushes
 .github/workflows/ci.yml   typecheck + unit + integration + e2e on every push
 ```
 
@@ -1293,19 +1293,17 @@ Honest list:
 
 ### Pushing it to GitHub
 
-The repository ships a helper that creates the remote (if needed) and pushes:
+The repository ships a helper that points the remote at the right place and
+pushes:
 
 ```bash
-./scripts/push-to-github.sh
+REMOTE_REPO=owner/name ./scripts/push-to-github.sh
 ```
 
-It needs a target repository. Set `REMOTE_REPO=owner/name` (there is no
-default any more, so the script cannot push to the wrong account by
-accident):
-
-```bash
-REMOTE_REPO=your-account/your-repo ./scripts/push-to-github.sh
-```
+`REMOTE_REPO` has no default on purpose, so the script cannot push to the
+wrong account by accident. It creates the repository if it does not exist yet
+(public, unless `gh` is logged in and a private one is created first), and
+reuses the existing remote otherwise.
 
 ### What I would do next, in order
 
@@ -1562,11 +1560,12 @@ There are three layers, and each one covers what the others cannot.
 
 ### Integration tests (a real database)
 
-`npm run test:api` runs the whole API suite (143 tests). The 105 in the
+`npm run test:api` runs the whole API suite (143 tests). The 96 in the
 files below run against a real Postgres, in a
 **private schema per test file** that is dropped afterwards. The
 developer's own database is never touched, and the tests can be run as
-often as you like.
+often as you like. The other three files (`provider.test.ts`,
+`ledger.test.ts`, `rate-limit.test.ts`) need no database at all.
 
 Each test file gets its own schema (`tce_<name>_<random>`) and points the
 `search_path` at it, so the application code runs unmodified against a

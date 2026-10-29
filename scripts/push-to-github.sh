@@ -2,12 +2,12 @@
 #
 # Pushes this repository to GitHub.
 #
-# The repo currently has no remote and this machine has no GitHub
-# credentials configured, so the first step is the only one that needs you:
-# authenticate. Everything after that is scripted.
+# The repository already has a remote, so the script only has to make sure it
+# points at the right place and that the credentials on this machine are good
+# enough to talk to GitHub. Everything else is scripted.
 #
 # Usage:
-#   ./scripts/push-to-github.sh
+#   REMOTE_REPO=owner/name ./scripts/push-to-github.sh
 #
 set -euo pipefail
 

@@ -1,21 +1,6 @@
-import type { FastifyInstance } from 'fastify';
-import { checkoutSchema, completeEventSchema, computeFees } from '@tce/shared';
 import { MockProvider } from '../payments/mock.js';
 import { VnPayProvider } from '../payments/vnpay.js';
 import type { PaymentProvider } from '../payments/provider.js';
-import {
-  createOrder,
-  getOrderStatus,
-  handleIpn,
-  OrderError,
-  releaseEventEscrow,
-} from '../services/orders.js';
-import {
-  auditLedger,
-  computeBalances,
-  getUserBalances,
-  listTransactions,
-} from '../services/ledger.js';
 
 export interface AppDeps {
   sql: import('../db/types.js').Db;
@@ -32,6 +17,13 @@ export interface AppDeps {
   };
 }
 
+/**
+ * Picks the payment provider the app runs against.
+ *
+ * The mock gateway is the default so the repository runs with one command
+ * and no credentials; the real VNPay sandbox is used when
+ * `MOCK_GATEWAY=false` and the merchant code and secret are set.
+ */
 export function providerFor(deps: AppDeps): PaymentProvider {
   if (deps.config.mockGateway) {
     // the simulated payment page is served by the API itself

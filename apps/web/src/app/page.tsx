@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { api } from '@/lib/api';
 import { getCurrentUser } from '@/lib/session';
 import { completeEvent } from '@/app/actions';
-import { formatDateTimeVi, formatVnd } from '@tce/shared';
+import { formatDateTimeVi } from '@tce/shared';
 import { Badge, EmptyState, PageHeader } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
