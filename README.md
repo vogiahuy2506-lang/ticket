@@ -520,9 +520,19 @@ What the API enforces:
 | `GET /api/ipn/vnpay` | no acting user: the gateway is not a user. It is authenticated by the HMAC signature instead, and it is rate limited |
 
 The public endpoints are the catalogue (`/api/users`, `/api/events`,
-`/api/events/:id`) and the webhook. The catalogue holds only names, roles
-and ids; there is nothing there to protect, and the brief has no login at
-all.
+`/api/events/:id`), the journal (`/api/ledger/*`) and the webhook.
+
+The catalogue holds only names, roles and ids - there is nothing there to
+protect, and the brief has no login at all. The journal is public on
+purpose: it is the audit trail, and an escrow that cannot be checked by
+the buyer is not verifiable. It shows *amounts*, never *who* - a receipt
+belongs to a person, the journal belongs to the platform. If a deployment
+wanted the journal private, `/api/ledger/*` is the one group that would
+need a role check, and the `/ledger` page already renders for every user,
+so it would change in one place.
+
+The webhook is not a user: it is authenticated by the HMAC signature
+instead, and it is rate limited.
 
 The storefront sends the header on every call, so the demo works without
 thinking about it - but a reviewer can call the API directly and get a
