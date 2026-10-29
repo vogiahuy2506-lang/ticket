@@ -14,6 +14,10 @@ double-entry ledger.
 > walkthrough: what to click, what to expect, and the SQL that proves each
 > claim - mapped one-to-one onto the brief.
 >
+> **Presenting this?** [`DEMO.md`](./DEMO.md) is a 5-minute script: the
+> order to run, the numbers to point at, and the answers to the hard
+> questions.
+>
 
 ---
 
