@@ -236,6 +236,34 @@ API_BASE_URL=http://localhost:3101 npm run dev
 
 `scripts/dev-local.sh` does both plus the migrations in one command.
 
+### Running it with the real gateway (optional)
+
+The quick start above runs with the **built-in mock gateway**, so it needs no
+credentials and no internet. To pay through the **real VNPay sandbox** you
+need two more things:
+
+1. **The credentials** in your local `.env` (they are never committed - see
+   [Credentials](#credentials)).
+2. **A public tunnel**, because the gateway calls the IPN endpoint from its
+   own servers and `localhost` is not reachable from there:
+
+   ```bash
+   docker compose --profile tunnel up --build
+   ```
+
+   The tunnel prints a URL like `https://random-words.trycloudflare.com`.
+   Put it into `.env` as `PUBLIC_BASE_URL`, restart the API, and **register
+   that URL as the IPN Url in the VNPay merchant portal**.
+
+That last step is the one that is easy to miss, and the app cannot do it for
+you: VNPay's payment request does not carry the notify address, so the
+gateway has nowhere to call back unless the URL is configured in the portal.
+Without it the buyer pays and the order stays in `PENDING_PAYMENT`.
+
+The full walkthrough - the tunnel, the portal, and how to tell a working
+setup from a broken one - is in
+[How gateway callbacks reach the app locally](#3-how-gateway-callbacks-reach-the-app-locally).
+
 ---
 
 ## 2. Which payment gateway, and why
@@ -1335,13 +1363,14 @@ verification, the Next.js pages, the Docker setup, the tests and this README.
 The fee model, the account chart and the idempotency strategy were designed
 by me; AI accelerated writing and caught type errors.
 
-**Time.** About three calendar days (27-29 October 2026, 33 commits), roughly
-one full working day of my own effort - the rest was AI-assisted iteration
-that ran faster than a human would type it. The parts that took the longest
-were getting the double-entry postings to stay balanced inside nested
-transactions, and the local callback story (the local machine had a
-PostgreSQL on 5432 and Docker Desktop's disk was full, so ports had to be
-made configurable).
+**Time.** About three calendar days (27-29 October 2026), roughly one full
+working day of my own effort - the rest was AI-assisted iteration that ran
+faster than a human would type it. The commit history is the record of it:
+one commit per decision, each with the reason in the message. The parts that
+took the longest were getting the double-entry postings to stay balanced
+inside nested transactions, and the local callback story (the local machine
+had a PostgreSQL on 5432 and Docker Desktop's disk was full, so ports had to
+be made configurable).
 
 **What the AI got wrong along the way**, and how it was caught:
 
