@@ -490,6 +490,44 @@ The storefront is a small demo with no real authentication. The dropdown in
 the header - **Đổi người dùng** - switches the acting user, and everything
 on the page is rendered for that user.
 
+### The API and the acting user
+
+The API is not open, even though the storefront has no login. Every request
+carries the id of the user it acts as, in one header:
+
+```
+x-tce-user-id: 62be190a-0ab8-4e9a-931f-63291baec7d1
+```
+
+The **role is never taken from the client**. The API looks the id up in the
+database and reads the role from there, so a caller cannot claim to be the
+operator by putting a name in a header. What the header buys is an
+*identity*, not a *proof of one* - see "What is not production ready" for
+why that is enough here and what it would take to be enough in production.
+
+What the API enforces:
+
+| Endpoint | Rule |
+| --- | --- |
+| `POST /api/checkout` | the buyer is the acting user - a `buyerId` in the body is ignored |
+| `POST /api/orders/:id/cancel` | only the buyer, and only while the order is `PENDING_PAYMENT` |
+| `GET /api/orders?userId=…` | only the acting user (or the operator) |
+| `GET /api/orders/:id` | the buyer, the seller or the operator |
+| `POST /api/orders/:id/recheck` | the buyer, the seller or the operator |
+| `GET /api/wallet/:userId` | only the owner (or the operator) |
+| `POST /api/events/:id/complete` | `admin` - it releases the escrow |
+| `GET /api/admin/*`, `POST /api/admin/events` | `admin` |
+| `GET /api/ipn/vnpay` | no acting user: the gateway is not a user. It is authenticated by the HMAC signature instead, and it is rate limited |
+
+The public endpoints are the catalogue (`/api/users`, `/api/events`,
+`/api/events/:id`) and the webhook. The catalogue holds only names, roles
+and ids; there is nothing there to protect, and the brief has no login at
+all.
+
+The storefront sends the header on every call, so the demo works without
+thinking about it - but a reviewer can call the API directly and get a
+`403` where the storefront would have shown a page.
+
 | Page | What it is for |
 | --- | --- |
 | **Sự kiện** (`/`) | The event list. Every card shows the venue, the start time, how many tickets are left and how many listings it has. The price model is explained at the bottom of the page. |
@@ -926,6 +964,8 @@ apps/api/
   src/payments/vnpay.ts     VNPay sandbox adapter (sign / verify)
   src/payments/mock.ts      local gateway simulator
   src/routes/               HTTP API + the mock payment page
+  src/auth.ts               the acting user and the role check
+  src/rate-limit.ts         the limiter on the webhook
   scripts/e2e-run.ts       boots the API and runs the e2e check in one command
   scripts/e2e.ts           the money-flow assertions themselves
   scripts/audit-ledger.ts  checks the journal for imbalances
@@ -938,7 +978,9 @@ apps/api/
     ipn.test.ts            the gateway notification
     http.test.ts           the HTTP surface and the response codes
     create-event.test.ts   creating a new event and its listings
-    invariants.test.ts     the money invariants
+    invariants.test.ts     the money invariants, and the balance rule in the
+                           database (a one-sided entry is refused)
+    rate-limit.test.ts     the limiter on the webhook
     race.test.ts           the checkout vs. event-completion lock race
     gaps.test.ts           the parts the demo does not click on
     legacy-text.test.ts    the repair of the unaccented names
@@ -952,6 +994,8 @@ apps/web/
   src/app/admin/            the operations dashboard (admin only)
   src/app/actions.ts        server actions: checkout, switch user, cancel
                             order, create event, complete event
+  src/lib/session.ts       who the acting user is
+  src/lib/users.ts         the user list (kept separate to break an import cycle)
   src/components/           ListingCheckoutForm, AccountCode, CreateEventForm
 scripts/
   dev.sh                    starts the stack, freeing the ports it needs first
