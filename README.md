@@ -57,6 +57,7 @@ Useful commands:
 ```bash
 docker compose logs -f api
 docker compose exec api npm run db:reset -w @tce/api
+docker compose exec api npm run db:init  -w @tce/api
 npm test
 npm run e2e
 ```
@@ -64,7 +65,8 @@ npm run e2e
 | Command | What it does |
 | --- | --- |
 | `docker compose logs -f api` | tail the API logs |
-| `docker compose exec api npm run db:reset -w @tce/api` | wipe and re-seed the database |
+| `docker compose exec api npm run db:reset -w @tce/api` | drop every table (it does **not** seed again) |
+| `docker compose exec api npm run db:init -w @tce/api` | apply the schema and re-seed the demo data |
 | `npm test` | unit tests + integration tests (needs a database) |
 | `npm run test:unit` | unit tests only (no database) |
 | `npm run test:api` | integration tests only (needs a database) |
@@ -1281,11 +1283,13 @@ verification, the Next.js pages, the Docker setup, the tests and this README.
 The fee model, the account chart and the idempotency strategy were designed
 by me; AI accelerated writing and caught type errors.
 
-**Time.** Roughly one working day of wall-clock time, most of it spent in
-AI-assisted iteration. The parts that took the longest were getting the
-double-entry postings to stay balanced inside nested transactions, and the
-local callback story (the local machine had a PostgreSQL on 5432 and Docker
-Desktop's disk was full, so ports had to be made configurable).
+**Time.** About three calendar days (27-29 October 2026, 27 commits), roughly
+one full working day of my own effort - the rest was AI-assisted iteration
+that ran faster than a human would type it. The parts that took the longest
+were getting the double-entry postings to stay balanced inside nested
+transactions, and the local callback story (the local machine had a
+PostgreSQL on 5432 and Docker Desktop's disk was full, so ports had to be
+made configurable).
 
 **What the AI got wrong along the way**, and how it was caught:
 

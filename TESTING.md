@@ -8,10 +8,14 @@ Mỗi bước đều ghi rõ **làm gì** và **thấy gì** để biết là đ
 ## 0. Chuẩn bị (5 phút)
 
 ```bash
-git clone <repo> && cd ticket-checkout-escrow
+git clone https://github.com/vogiahuy2506-lang/ticket.git && cd ticket
 cp .env.example .env
 ./scripts/dev.sh
 ```
+
+> `<repo>` trong bản cũ của tài liệu này là **placeholder**, không phải URL
+> thật - dán nguyên `<repo>` vào terminal sẽ ra `zsh: parse error near '&&'`
+> vì zsh hiểu `<` là toán tử redirection. Dùng URL thật ở trên.
 
 Mở <http://localhost:3000>.
 
@@ -30,6 +34,38 @@ Trang mở đầu phải hiện **2 sự kiện**:
 | Hội thảo Kỷ nam 2026 | 2 | 7 |
 
 > `dev.sh` tự giải quyết xung đột cổng 3000/3101 (dừng container cũ **và** process `npm run dev` còn sót trên host). Nếu từng chạy `npm run dev` thì phải dừng nó trước khi chạy `dev.sh`.
+
+### 0.1 Đưa dữ liệu về trạng thái sạch (làm trước khi demo)
+
+Kho vé có sẵn là **hữu hạn**, và sau mỗi lần demo các sự kiện sẽ ở trạng
+thái `completed` (đã giải ngân) còn vé thì đã bán mất. Để bắt đầu một lần
+demo sạch:
+
+```bash
+docker compose exec api npm run db:reset -w @tce/api
+docker compose exec api npm run db:init  -w @tce/api
+```
+
+> `db:reset` chỉ **XÓA bảng**, nó không seed lại. Phải chạy cả hai lệnh:
+> `db:reset` (xóa) rồi `db:init` (migrate + seed). `db:init` một mình thì
+> không xóa gì cả, nên nếu đã demo rồi thì dữ liệu cũ vẫn còn.
+
+Kiểm tra lại:
+
+```bash
+docker compose exec -T db psql -U postgres -d tickets -c "select name, status from events order by name;"
+```
+→ cả 2 sự kiện đều `scheduled` ✓
+
+```bash
+docker compose exec -T db psql -U postgres -d tickets -c "select count(*) from orders;"
+docker compose exec -T db psql -U postgres -d tickets -c "select count(*) from ledger_transactions;"
+```
+→ `0` và `0` ✓
+
+> Nếu `docker compose up` bị dừng bằng `Ctrl+C` thì các container cũng bị
+> stop theo. Khởi động lại bằng `docker compose up -d` (thêm `-d` để chạy
+> nền, không bị `Ctrl+C` giết).
 
 **Dữ liệu seed** (6 nhóm vé, 3 người bán):
 
@@ -352,7 +388,8 @@ npm run e2e        # money flow qua HTTP thật, tự boot API, tự dọn schem
 npm run test:unit  # không cần database
 ```
 
-Kết quả kỳ vọng: **30 unit + 126 integration + e2e + build**, tất cả xanh.
+Kết quả kỳ vọng: **30 unit (shared) + 139 unit+integration (api) + e2e + build**,
+tất cả xanh.
 CI GitHub Actions chạy đúng bộ này trên mỗi push.
 
 `npm run e2e` chạy trong **schema Postgres riêng** rồi xóa đi - **không làm bẩn
@@ -363,6 +400,8 @@ dữ liệu demo**, nên bạn có thể chạy giữa lúc đang demo.
 ## 7. Checklist nộp bài
 
 - [ ] `docker compose up` (qua `dev.sh`) chạy được từ clone sạch
+- [ ] Dữ liệu sạch trước khi demo: `db:reset` **rồi** `db:init`, cả 2 sự kiện
+      `scheduled`, `orders` = 0, `ledger_transactions` = 0
 - [ ] `.env.example` có đủ biến, **không** chứa credential thật
 - [ ] README đủ 5 mục bắt buộc: cách chạy + callback, cổng & lý do, quyết định
       khi đề im lặng, chưa production-ready, cách dùng AI + thời gian
@@ -423,14 +462,37 @@ còn hơn im lặng.
 
 Repo hiện tại: `github.com/vogiahuy2506-lang/ticket` (public).
 
-Nếu `syn-mcj` là tài khoản của giám khảo và họ đã tạo repo:
+> **Bước này chưa làm.** Tài khoản `Syn-McJ` trên GitHub có sẵn nhưng chưa có
+> repo nào tên `ticket` / `ticket-checkout-escrow`, và máy này chưa đăng nhập
+> `gh` (chưa có credential) — nên **phải tự làm thủ công**, không tự động
+> hoá được.
+
+Cách làm, theo thứ tự:
+
 ```bash
-REMOTE_REPO=syn-mcj/ticket ./scripts/push-to-github.sh
+# 1. đăng nhập GitHub CLI (mở trình duyệt, xác nhận bằng mã)
+gh auth login
+
+# 2a. Nếu giám khảo đã tạo repo trước: đổi remote rồi push
+REMOTE_REPO=Syn-McJ/ticket ./scripts/push-to-github.sh
+
+# 2b. Nếu giám khảo chưa tạo repo: tạo repo trống rồi push
+gh repo create Syn-McJ/ticket --public --description "Ticket checkout with escrow" --clone=false
+REMOTE_REPO=Syn-McJ/ticket ./scripts/push-to-github.sh
+
+# 2c. Hoặc bảo giám khảo add bạn làm collaborator, rồi bạn push lên repo của họ
 ```
-Script sẽ tự đổi remote và push. Nếu họ chưa tạo repo, cần bảo họ tạo rồi bạn push,
-hoặc họ add bạn làm collaborator rồi bạn push lên `syn-mcj/ticket`.
-Không có credential nào trong máy lúc này, nên bước này **phải tự làm** —
-không tự động hoá được.
+
+Sau đó kiểm tra:
+
+```bash
+git remote -v                       # remote phải trỏ tới syn-mcj
+curl -s https://api.github.com/repos/Syn-McJ/ticket | grep full_name
+```
+
+> **Đừng** tạo repo private: giám khảo cần clone được để chạy thử. Nếu
+> `Syn-McJ/ticket` đã tồn tại và có code, dùng cách (2c) - bảo họ add bạn
+> làm collaborator.
 
 ### Ghi chú: khi hết vé seed
 
