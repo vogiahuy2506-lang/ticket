@@ -272,6 +272,7 @@ verifies:
 | `vnp_IpAddr` | the **buyer's** address, `Alphanumeric[7,45]`. An IPv6 address or a loopback `::1` does not fit, so the address is normalised into a plain IPv4 (`normalizeClientIp`). |
 | `vnp_TmnCode` | the merchant code, max **8** characters. |
 | `vnp_NotifyUrl` | **not sent.** VNPay's `pay` request does not accept it: the IPN URL is registered once in the merchant portal. An unknown parameter also ends up in the signed hash, so sending one makes our signature disagree with the gateway's. |
+| `vnp_Locale` | **required.** `vn` or `en`. A signed request without it is refused with `Error.html?code=03` ("Invalid data format") - see the live run below. |
 | Success | `vnp_ResponseCode == '00'` **and** `vnp_TransactionStatus == '00'`. |
 | The IPN request | a **GET** with the parameters in the query string (the endpoint also accepts `POST`, for convenience). The reply is HTTP 200 with `{"RspCode":"00","Message":"..."}`. |
 | RspCode | `00` success, `01` order not found, `02` already confirmed, `04` invalid amount, `97` invalid signature, `99` invalid request. |
@@ -445,13 +446,45 @@ payload exactly the way VNPay does and posts it three times, proving the
 handler is idempotent: the money is booked once and the replays are
 answered with `02`.
 
-### What a run against the live sandbox showed (2026-10-28)
+### What a run against the live sandbox showed (2026-10-29)
 
-One purchase of a 900,000 VND ticket, paid with the NCB test card:
+A fresh merchant was registered for this task and a real purchase was made
+against the live sandbox - a 900,000 VND ticket, paid with the NCB test
+card, through the app's own checkout:
 
-- **The signed payment URL is accepted.** The gateway redirects to its
-  payment-method page (`PaymentMethod.html?token=...`), not to
-  `Error.html?code=70` (invalid signature).
+- **The signed payment URL is accepted by the real gateway.** The browser
+  was redirected to `Transaction/PaymentMethod.html?token=...`, the real
+  VNPay payment-method page, and the NCB card form, the OTP prompt
+  (`123456`) and the success screen all rendered. A bad signature would
+  have landed on `Error.html?code=70` instead.
+- **One parameter decides whether the URL is accepted at all:**
+  `vnp_Locale`. With `vnp_Locale=vn` the gateway accepts the request and
+  shows the payment page; without it, the same signed request is refused
+  with `Error.html?code=03` ("Invalid data format"). The provider always
+  sends it.
+- **The gateway signs the redirect, not the browser.** The order page is
+  reached with `vnp_ResponseCode=00&vnp_TransactionStatus=00` in the
+  query string, but the app does **not** trust that: the redirect is a
+  hint to the buyer, the IPN is the source of truth. The order only becomes
+  `PAID` when the notification arrives.
+- **The IPN did not arrive, because the IPN URL had not been registered
+  yet.** The merchant account was created minutes before the run, and the
+  sandbox only calls the URL that is stored in the merchant portal - a
+  `vnp_NotifyUrl` parameter is not part of the `pay` request (see the
+  parameter table above). Until the URL is saved on the terminal's
+  configuration page, the gateway has nowhere to call, so the order stays
+  `PENDING_PAYMENT` even though the buyer was charged in the sandbox.
+  This is exactly the state the "Registering the IPN URL" step above
+  exists to prevent, and it is why that step is listed as a manual one.
+- **`querydr` cannot rescue it.** The re-check came back with the sandbox's
+  unsigned `{"vnp_ResponseCode":"99","vnp_Message":"Unexpected error"}`,
+  so the app kept the order's status and logged `the re-check did not
+  apply the gateway answer`. See below - `querydr` is not usable in the
+  sandbox at all.
+
+An earlier run (2026-10-28) on an already-configured merchant showed the
+rest of the flow:
+
 - **The IPN arrives and is applied.** VNPay called
   `GET /api/ipn/vnpay` from `VNPAY GATEWAY/2.0` with
   `vnp_ResponseCode=00`, `vnp_TransactionStatus=00` and
@@ -1300,7 +1333,7 @@ verification, the Next.js pages, the Docker setup, the tests and this README.
 The fee model, the account chart and the idempotency strategy were designed
 by me; AI accelerated writing and caught type errors.
 
-**Time.** About three calendar days (27-29 October 2026, 27 commits), roughly
+**Time.** About three calendar days (27-29 October 2026, 29 commits), roughly
 one full working day of my own effort - the rest was AI-assisted iteration
 that ran faster than a human would type it. The parts that took the longest
 were getting the double-entry postings to stay balanced inside nested
