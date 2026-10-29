@@ -1337,7 +1337,7 @@ verification, the Next.js pages, the Docker setup, the tests and this README.
 The fee model, the account chart and the idempotency strategy were designed
 by me; AI accelerated writing and caught type errors.
 
-**Time.** About three calendar days (27-29 October 2026, 29 commits), roughly
+**Time.** About three calendar days (27-29 October 2026, 33 commits), roughly
 one full working day of my own effort - the rest was AI-assisted iteration
 that ran faster than a human would type it. The parts that took the longest
 were getting the double-entry postings to stay balanced inside nested
